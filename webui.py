@@ -300,6 +300,12 @@ APP_HEAD = """
 </script>
 """
 MEDIA_FILE_TYPES = [
+    # The "audio" and "video" shorthands become audio/* and video/* in the
+    # picker's accept attribute. Android resolves accept by MIME type and
+    # largely ignores bare extensions, so an extension-only list greys out
+    # perfectly valid files on a phone. Extensions stay for desktop browsers,
+    # which do honour them.
+    "audio", "video",
     ".mp4", ".avi", ".mov", ".mkv", ".webm", ".flv", ".wmv",
     ".mp3", ".wav", ".flac", ".ogg", ".m4a", ".wma", ".aac", ".opus",
 ]
@@ -2282,7 +2288,12 @@ with gr.Blocks(title=APP_TITLE) as demo:
                         prompt_audio = gr.Audio(
                             label="Active Speaker Reference Audio (Required, 3-90 seconds)",
                             key="prompt_audio",
-                            sources=["microphone"],
+                            # "upload" as well as the microphone: a phone
+                            # cannot use the mic here at all (browsers block
+                            # getUserMedia on a plain http:// origin), so
+                            # microphone-only left mobile with no way to supply
+                            # a reference voice.
+                            sources=["upload", "microphone"],
                             type="filepath",
                             format="wav",
                             elem_id="speaker-reference-audio",
