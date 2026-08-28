@@ -2395,6 +2395,10 @@ with gr.Blocks(title=APP_TITLE) as demo:
                 output_audio = gr.Audio(
                     label="Generated Result (click to play/download)",
                     visible=True,
+                    # filepath, not the gr.Audio default of numpy: the Speed &
+                    # Pitch controls take this component as an input and need a
+                    # path to hand ffmpeg, not a (sample_rate, array) tuple.
+                    type="filepath",
                     key="output_audio"
                 )
                 with gr.Accordion("Speed & Pitch", open=False):

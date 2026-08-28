@@ -101,6 +101,15 @@ def shape_audio(
     """
     if not source_path:
         raise VoiceShapingError("Generate some audio before shaping it.")
+    if not isinstance(source_path, (str, bytes, os.PathLike)):
+        # A gr.Audio left on its default type hands over a
+        # (sample_rate, samples) tuple instead of a path. Say so plainly
+        # rather than letting os.stat raise a bare TypeError.
+        raise VoiceShapingError(
+            "Expected an audio file path but received "
+            f"{type(source_path).__name__}. The audio component feeding this "
+            'must be declared with type="filepath".'
+        )
     if not os.path.exists(source_path):
         raise VoiceShapingError(f"Audio file no longer exists: {source_path}")
     if is_noop(speed, semitones):
