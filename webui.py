@@ -2,6 +2,7 @@ import html
 import json
 import os
 import sys
+import queue
 import threading
 import time
 import gc
@@ -87,6 +88,9 @@ from indextts.utils.task_output_utils import (
 )
 from tools.i18n.i18n import I18nAuto
 import webui_media_fetch as media_fetch
+import webui_emotion_presets as emotion_presets
+import webui_voice_shaping as voice_shaping
+import webui_tone_presets as tone_presets
 from webui_generation_runner import create_tts as create_generation_tts, run_generation_request
 
 i18n = I18nAuto(language="Auto")
@@ -125,13 +129,52 @@ class LazyTTSProxy:
         setattr(self.get_instance(), key, value)
 
 
+DEVICE_CPU = "cpu"
+DEVICE_CPU_LABEL = "CPU (slow, always available)"
+DEVICE_AUTO = "auto"
+DEVICE_AUTO_LABEL = "Auto (first CUDA device)"
+
+
+class DeviceSelection:
+    """Holds the device the next model load should use.
+
+    The model is built by a zero-argument factory inside LazyTTSProxy, so the
+    choice cannot be passed as a parameter; it is read back out here at load
+    time. Guarded by a lock because the UI thread writes it while a generation
+    thread may be reading it.
+    """
+
+    def __init__(self, initial=DEVICE_AUTO):
+        self._value = initial
+        self._lock = threading.Lock()
+
+    def get(self):
+        with self._lock:
+            return self._value
+
+    def set(self, value):
+        """Store `value`; returns True when it actually changed."""
+        with self._lock:
+            if value == self._value:
+                return False
+            self._value = value
+            return True
+
+
+selected_device = DeviceSelection()
+
+
 def _build_tts_runtime_options():
+    # "auto" means leave device unset so IndexTTS2 picks it the way it always
+    # has; anything else is an explicit user choice from the device dropdown.
+    device = selected_device.get()
     return {
         "model_dir": cmd_args.model_dir,
         "cfg_path": os.path.join(cmd_args.model_dir, "config.yaml"),
         "use_fp16": bool(cmd_args.fp16),
         "use_deepspeed": bool(cmd_args.deepspeed),
         "use_cuda_kernel": bool(cmd_args.cuda_kernel),
+        "device": None if device == DEVICE_AUTO else device,
     }
 
 
@@ -1422,11 +1465,94 @@ def _prepare_generation_request(
     }
 
 
+def render_progress_bar(fraction, message, done=False, failed=False):
+    """Render an explicit progress bar.
+
+    Gradio's own progress overlay proved easy to miss, especially on a phone,
+    so the tab draws its own bar as part of the normal page flow. Colours are
+    inline and theme-neutral so it reads on both light and dark.
+    """
+    percent = max(0, min(100, int(round((fraction or 0.0) * 100))))
+    if failed:
+        fill, label = "#dc2626", f"Failed - {message}"
+    elif done:
+        fill, label = "#16a34a", f"Done - {message}"
+    else:
+        fill, label = "#2563eb", f"{percent}% - {message}"
+    safe = html.escape(label)
+    return (
+        '<div style="width:100%;font-family:system-ui,sans-serif;font-size:0.85rem;">'
+        f'<div style="margin-bottom:4px;opacity:0.85;">{safe}</div>'
+        '<div style="width:100%;height:14px;border-radius:7px;'
+        'background:rgba(128,128,128,0.25);overflow:hidden;">'
+        f'<div style="width:{percent}%;height:100%;background:{fill};'
+        'transition:width 0.25s ease;"></div></div></div>'
+    )
+
+
+MEDIA_FETCH_PROGRESS_IDLE = render_progress_bar(0.0, "Idle")
+
+
+GENERATION_PROGRESS_POLL_SECONDS = 0.4
+GENERATION_PROGRESS_IDLE = render_progress_bar(0.0, "Idle")
+
+
+def _drain_progress_file(path, consumed, last_fraction):
+    """Read progress lines written since `consumed` bytes.
+
+    Returns (new_consumed, newest_fraction, newest_description). The
+    description is None when nothing new arrived. Malformed or partially
+    written lines are skipped rather than raised: the worker appends while we
+    read, so a torn final line is expected and is not an error.
+    """
+    try:
+        size = os.path.getsize(path)
+    except OSError:
+        return consumed, last_fraction, None
+    if size <= consumed:
+        return consumed, last_fraction, None
+
+    # Binary, because `consumed` is a byte offset. In text mode on Windows a
+    # seek offset is an opaque cookie and \n is stored as \r\n, so byte
+    # arithmetic silently slips and events get skipped or replayed.
+    try:
+        with open(path, "rb") as handle:
+            handle.seek(consumed)
+            chunk = handle.read()
+    except OSError as exc:
+        print(f"could not read progress file: {type(exc).__name__}: {exc}")
+        return consumed, last_fraction, None
+
+    # Only whole lines are safe to parse; a trailing partial line is expected
+    # because the worker appends while we read, so leave it for the next poll.
+    complete, newline, _partial = chunk.rpartition(b"\n")
+    if not newline:
+        return consumed, last_fraction, None
+
+    newest = None
+    for raw in complete.splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        try:
+            event = json.loads(line.decode("utf-8"))
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            continue
+        value = event.get("value")
+        if isinstance(value, (int, float)):
+            last_fraction = min(max(float(value), 0.0), 1.0)
+        newest = str(event.get("desc") or "Working...")
+
+    return consumed + len(complete) + len(newline), last_fraction, newest
+
+
 def _run_generation_subprocess(request):
     request_fd, request_path = tempfile.mkstemp(prefix="indextts_request_", suffix=".json")
     os.close(request_fd)
     result_fd, result_path = tempfile.mkstemp(prefix="indextts_result_", suffix=".json")
     os.close(result_fd)
+    progress_fd, progress_path = tempfile.mkstemp(prefix="indextts_progress_", suffix=".jsonl")
+    os.close(progress_fd)
 
     try:
         with open(request_path, "w", encoding="utf-8") as handle:
@@ -1439,6 +1565,8 @@ def _run_generation_subprocess(request):
             request_path,
             "--result-file",
             result_path,
+            "--progress-file",
+            progress_path,
         ]
         popen_kwargs = {
             "cwd": current_dir,
@@ -1458,7 +1586,30 @@ def _run_generation_subprocess(request):
             request["task_id"],
         )
 
-        return_code = process.wait()
+        # A gradio Progress object cannot cross a process boundary, so the
+        # worker appends progress events to progress_path and we tail it while
+        # the child runs. Falling behind is harmless: only the newest event is
+        # rendered, and the loop always drains what is there before exiting.
+        consumed = 0
+        last_fraction = 0.0
+        while process.poll() is None:
+            consumed, last_fraction, event = _drain_progress_file(
+                progress_path, consumed, last_fraction
+            )
+            if event is not None:
+                yield (
+                    gr.update(value=render_progress_bar(last_fraction, event)),
+                    gr.update(),
+                    gr.update(),
+                    gr.update(),
+                )
+            time.sleep(GENERATION_PROGRESS_POLL_SECONDS)
+
+        consumed, last_fraction, event = _drain_progress_file(
+            progress_path, consumed, last_fraction
+        )
+
+        return_code = process.returncode
         state_snapshot = _clear_subprocess_state(process) or {}
         canceled = bool(state_snapshot.get("canceled"))
         cancel_reason = state_snapshot.get("cancel_reason") or "Generation was canceled."
@@ -1479,7 +1630,9 @@ def _run_generation_subprocess(request):
 
         subtitle_status_message = result.get("subtitle_status") or ""
         video_path = result.get("video_path")
-        return (
+        yield (
+            gr.update(value=render_progress_bar(
+                1.0, os.path.basename(result["output_path"]), done=True)),
             gr.update(value=result["output_path"], visible=True),
             gr.update(value=video_path, visible=bool(video_path)),
             gr.update(value=subtitle_status_message, visible=bool(subtitle_status_message)),
@@ -1487,6 +1640,7 @@ def _run_generation_subprocess(request):
     finally:
         _cleanup_temp_file(request_path)
         _cleanup_temp_file(result_path)
+        _cleanup_temp_file(progress_path)
 
 
 def cancel_generation_process(use_subprocess_system, cancel_confirmed):
@@ -1706,12 +1860,24 @@ def gen_single(emo_control_method,prompt, text, subtitle_mode, subtitle_file, sa
     )
 
     if use_subprocess_system:
-        return _run_generation_subprocess(request)
+        # _run_generation_subprocess is a generator: it streams progress while
+        # the child runs, then yields the final result. yield from, not return.
+        yield from _run_generation_subprocess(request)
+        return
 
-    result = run_generation_request(request, tts.get_instance(), progress_callback=progress)
+    # In-process mode reports through gradio's own Progress object, which the
+    # engine calls via tts.gr_progress. Mirror it onto the visible bar too.
+    def _forward_progress(value, desc: str = ""):
+        progress(value, desc=desc)
+
+    result = run_generation_request(
+        request, tts.get_instance(), progress_callback=_forward_progress
+    )
     subtitle_status_message = result.get("subtitle_status") or ""
     video_path = result.get("video_path")
-    return (
+    yield (
+        gr.update(value=render_progress_bar(
+            1.0, os.path.basename(result["output_path"]), done=True)),
         gr.update(value=result["output_path"], visible=True),
         gr.update(value=video_path, visible=bool(video_path)),
         gr.update(value=subtitle_status_message, visible=bool(subtitle_status_message)),
@@ -1831,6 +1997,73 @@ MEDIA_FETCH_GAIN_MIN_DB = -20.0
 MEDIA_FETCH_GAIN_MAX_DB = 20.0
 MEDIA_FETCH_GAIN_STEP_DB = 0.5
 MEDIA_FETCH_LOG_LINES = 12
+# The worker thread has already signalled completion by the time we join, so
+# this only bounds a pathological hang rather than normal waiting.
+MEDIA_FETCH_THREAD_JOIN_SECONDS = 30
+
+
+# --------------------------------------------------------------------------
+# Emotion presets
+# --------------------------------------------------------------------------
+
+
+
+# Index into EMO_CHOICES_ALL of "Use emotion vector control". The emotion
+# vector is ONLY read by the generator in this mode, so choosing a preset has
+# to switch here or the slider values are silently ignored.
+EMOTION_VECTOR_MODE_INDEX = 2
+
+# Index of "Use emotion text description". The emo_text field is only read in
+# this mode, so a tone preset has to switch here for the description to matter.
+EMOTION_TEXT_MODE_INDEX = 3
+
+# How many group components on_method_change toggles. Kept as a constant so a
+# handler that wants to leave them all alone can emit the right number of
+# no-op updates without hardcoding it in two places.
+EMOTION_GROUP_COUNT = 5
+
+
+def apply_emotion_preset(preset_name):
+    """Push a preset's eight values onto the vec1..vec8 sliders."""
+    return tuple(gr.update(value=value)
+                 for value in emotion_presets.preset_vector(preset_name))
+
+
+# --------------------------------------------------------------------------
+# Compute device selection
+# --------------------------------------------------------------------------
+
+def available_devices():
+    """Return [(label, value)] of every device the user may pick.
+
+    Always includes auto and CPU. Enumerates CUDA devices by index so the
+    label names the actual card rather than a bare number.
+    """
+    choices = [(DEVICE_AUTO_LABEL, DEVICE_AUTO)]
+    try:
+        import torch
+        if torch.cuda.is_available():
+            for index in range(torch.cuda.device_count()):
+                name = torch.cuda.get_device_name(index)
+                total_gb = torch.cuda.get_device_properties(index).total_memory / (1024 ** 3)
+                choices.append((f"cuda:{index} - {name} ({total_gb:.0f} GB)", f"cuda:{index}"))
+    except Exception as exc:  # noqa: BLE001 - reported, never silently swallowed
+        print(f"Could not enumerate CUDA devices: {type(exc).__name__}: {exc}")
+    choices.append((DEVICE_CPU_LABEL, DEVICE_CPU))
+    return choices
+
+
+def on_device_change(device_value):
+    """Record the new device and drop the loaded model so it reloads onto it."""
+    if not selected_device.set(device_value):
+        return gr.update(value=f"Already using {device_value}.", visible=True)
+    was_loaded = unload_inprocess_tts()
+    if device_value == DEVICE_CPU:
+        detail = "CPU selected - generation will be much slower, and fp16 is disabled there."
+    else:
+        detail = f"{device_value} selected."
+    suffix = " Model unloaded; it reloads on the next generation." if was_loaded else ""
+    return gr.update(value=detail + suffix, visible=True)
 
 # Label of the tab that owns the reference voice, and the client-side hop that
 # focuses it after a hand-off. Gradio's own tab selection needs an explicit
@@ -1897,41 +2130,90 @@ def media_fetch_run_ui(
     normalize,
     gain_db,
     keep_source,
+    progress=gr.Progress(),
 ):
-    """Download & Extract button: run the whole pipeline and report the result."""
-    try:
-        start_seconds = media_fetch.parse_time_to_seconds(start_time)
-        end_seconds = media_fetch.parse_time_to_seconds(end_time)
-        result = media_fetch.fetch_and_extract(
-            url=url,
-            output_root=MEDIA_FETCH_OUTPUT_ROOT,
-            format_key=format_key,
-            sample_rate=int(sample_rate),
-            channel_mode=channel_mode,
-            start_seconds=start_seconds,
-            end_seconds=end_seconds,
-            normalize=bool(normalize),
-            gain_db=float(gain_db),
-            download_mode=download_mode,
-            cookies_from_browser=cookies_browser,
-            keep_source_file=bool(keep_source),
-        )
-    except media_fetch.MediaFetchError as exc:
-        return (
-            gr.update(value=None),
-            gr.update(value=""),
-            gr.update(value=f"WARNING: {exc}", visible=True),
-            gr.update(value=str(exc)),
+    """Download & Extract button: stream progress, then report the result.
+
+    This is a generator so the status and log boxes update live. The pipeline
+    itself is blocking, so it runs on a worker thread and pushes FetchProgress
+    events onto a queue that this generator drains.
+    """
+    events = queue.Queue()
+    outcome = {}
+    finished = object()
+
+    def worker():
+        """Run the blocking pipeline, funnelling every event onto the queue."""
+        try:
+            start_seconds = media_fetch.parse_time_to_seconds(start_time)
+            end_seconds = media_fetch.parse_time_to_seconds(end_time)
+            outcome["result"] = media_fetch.fetch_and_extract(
+                url=url,
+                output_root=MEDIA_FETCH_OUTPUT_ROOT,
+                format_key=format_key,
+                sample_rate=int(sample_rate),
+                channel_mode=channel_mode,
+                start_seconds=start_seconds,
+                end_seconds=end_seconds,
+                normalize=bool(normalize),
+                gain_db=float(gain_db),
+                download_mode=download_mode,
+                cookies_from_browser=cookies_browser,
+                keep_source_file=bool(keep_source),
+                progress_callback=events.put,
+            )
+        except media_fetch.MediaFetchError as exc:
+            outcome["error"] = str(exc)
+        except Exception as exc:  # noqa: BLE001 - surfaced, never swallowed
+            outcome["error"] = f"Unexpected {type(exc).__name__}: {exc}"
+        finally:
+            events.put(finished)
+
+    thread = threading.Thread(target=worker, daemon=True, name="media-fetch")
+    thread.start()
+
+    lines = []
+    last_fraction = 0.0
+    while True:
+        event = events.get()
+        if event is finished:
+            break
+        lines.append(event.message)
+        if event.fraction is not None:
+            progress(event.fraction, desc=event.message)
+            last_fraction = event.fraction
+        yield (
+            gr.update(value=render_progress_bar(last_fraction, event.message)),
+            gr.update(),
+            gr.update(),
+            gr.update(value=event.message, visible=True),
+            gr.update(value="\n".join(lines[-MEDIA_FETCH_LOG_LINES:])),
         )
 
+    thread.join(timeout=MEDIA_FETCH_THREAD_JOIN_SECONDS)
+
+    if "error" in outcome:
+        lines.append(outcome["error"])
+        yield (
+            gr.update(value=render_progress_bar(
+                last_fraction, outcome["error"], failed=True)),
+            gr.update(value=None),
+            gr.update(value=""),
+            gr.update(value=f"WARNING: {outcome['error']}", visible=True),
+            gr.update(value="\n".join(lines[-MEDIA_FETCH_LOG_LINES:])),
+        )
+        return
+
+    result = outcome["result"]
     audio_path = result["audio_path"]
-    log_text = "\n".join(result["log"][-MEDIA_FETCH_LOG_LINES:])
     status = f"Saved {os.path.basename(audio_path)} from \"{result['title']}\"."
-    return (
+    progress(1.0, desc=status)
+    yield (
+        gr.update(value=render_progress_bar(1.0, status, done=True)),
         gr.update(value=audio_path),
         gr.update(value=audio_path),
         gr.update(value=status, visible=True),
-        gr.update(value=log_text),
+        gr.update(value="\n".join(result["log"][-MEDIA_FETCH_LOG_LINES:])),
     )
 
 
@@ -2109,11 +2391,44 @@ with gr.Blocks(title=APP_TITLE) as demo:
                     )
 
             with gr.Column(scale=1, min_width=280):
+                gen_progress = gr.HTML(value=GENERATION_PROGRESS_IDLE)
                 output_audio = gr.Audio(
                     label="Generated Result (click to play/download)",
                     visible=True,
                     key="output_audio"
                 )
+                with gr.Accordion("Speed & Pitch", open=False):
+                    gr.Markdown(
+                        "Applied to the generated clip above. The engine has no "
+                        "speed or pitch setting, so this reshapes the audio "
+                        "afterwards without changing who it sounds like."
+                    )
+                    shaping_speed = gr.Slider(
+                        label="Speed",
+                        minimum=voice_shaping.SPEED_MIN,
+                        maximum=voice_shaping.SPEED_MAX,
+                        step=voice_shaping.SPEED_STEP,
+                        value=voice_shaping.SPEED_DEFAULT,
+                        info="1.0 is unchanged. Below 1 is slower, above is faster.",
+                    )
+                    shaping_pitch = gr.Slider(
+                        label="Pitch (semitones)",
+                        minimum=voice_shaping.PITCH_MIN_SEMITONES,
+                        maximum=voice_shaping.PITCH_MAX_SEMITONES,
+                        step=voice_shaping.PITCH_STEP_SEMITONES,
+                        value=voice_shaping.PITCH_DEFAULT_SEMITONES,
+                        info="Negative is deeper, positive is higher. 12 = one octave.",
+                    )
+                    with gr.Row():
+                        shaping_apply_btn = gr.Button("Apply", variant="secondary")
+                        shaping_reset_btn = gr.Button("Reset", variant="secondary")
+                    shaping_status = gr.Textbox(
+                        label="Speed & pitch status",
+                        value="",
+                        visible=False,
+                        interactive=False,
+                        lines=1,
+                    )
                 output_video = gr.Video(
                     label="Generated MP4",
                     visible=False,
@@ -2180,6 +2495,23 @@ with gr.Blocks(title=APP_TITLE) as demo:
                     label="Emotion Control Method",
                     info="Choose how to control emotions: Speaker's natural emotion, reference audio emotion, manual vector control, or text description"
                 )
+                with gr.Column(min_width=230):
+                    emotion_preset = gr.Dropdown(
+                        label="Emotion preset",
+                        choices=emotion_presets.EMOTION_PRESET_NAMES,
+                        value=emotion_presets.EMOTION_PRESET_NEUTRAL,
+                        info="Switches to vector control and fills the eight sliders. Tune them afterwards.",
+                    )
+                    emotion_preset_reset_btn = gr.Button(
+                        "Reset to Neutral", variant="secondary"
+                    )
+                with gr.Column(min_width=230):
+                    tone_preset = gr.Dropdown(
+                        label="Tone / delivery preset",
+                        choices=tone_presets.TONE_PRESET_NAMES,
+                        value=tone_presets.TONE_PRESET_NONE,
+                        info="Describes HOW to say it (low and deep, whispered...). Never spoken aloud.",
+                    )
         # 情感参考音频部分
         with gr.Group(visible=False) as emotion_reference_group:
             with gr.Row():
@@ -2332,6 +2664,23 @@ with gr.Blocks(title=APP_TITLE) as demo:
     with gr.Tab("Advanced Parameters"):
         gr.Markdown("### 🎯 Advanced Audio Generation Parameters")
         gr.Markdown("_Fine-tune generation parameters for expert control over audio synthesis._")
+
+        with gr.Group():
+            gr.Markdown("#### Compute Device")
+            with gr.Row():
+                device_dropdown = gr.Dropdown(
+                    label="Run the model on",
+                    choices=available_devices(),
+                    value=DEVICE_AUTO,
+                    info="Changing this unloads the model; it reloads on the next generation.",
+                )
+                device_status = gr.Textbox(
+                    label="Device status",
+                    value="",
+                    visible=False,
+                    interactive=False,
+                    lines=1,
+                )
 
         with gr.Row():
             with gr.Column():
@@ -2940,6 +3289,7 @@ with gr.Blocks(title=APP_TITLE) as demo:
             mf_send_btn = gr.Button("Send to Reference Voice", variant="secondary", scale=1)
             mf_open_folder_btn = gr.Button("Open Output Folder", variant="secondary", scale=1)
 
+        mf_progress = gr.HTML(value=MEDIA_FETCH_PROGRESS_IDLE)
         mf_status = gr.Textbox(label="Status", value="", visible=False, interactive=False)
 
         with gr.Row():
@@ -3205,7 +3555,7 @@ with gr.Blocks(title=APP_TITLE) as demo:
                               *model_params,
                                use_subprocess_system,
                        ],
-                       outputs=[output_audio, output_video, subtitle_status])
+                       outputs=[gen_progress, output_audio, output_video, subtitle_status])
 
     open_outputs_button.click(open_outputs_folder)
 
@@ -3309,8 +3659,8 @@ with gr.Blocks(title=APP_TITLE) as demo:
             mf_gain,
             mf_keep_source,
         ],
-        outputs=[mf_result_audio, mf_result_path, mf_status, mf_log],
-        show_progress="full",
+        outputs=[mf_progress, mf_result_audio, mf_result_path, mf_status, mf_log],
+        show_progress="minimal",
     )
 
     mf_send_btn.click(
@@ -3338,9 +3688,139 @@ with gr.Blocks(title=APP_TITLE) as demo:
         show_progress="hidden",
     )
 
+    # ----------------------------------------------------------------------
+    # Emotion presets and compute device
+    # ----------------------------------------------------------------------
+
+    _EMOTION_SLIDERS = [vec1, vec2, vec3, vec4, vec5, vec6, vec7, vec8]
+    _EMOTION_GROUPS = [
+        emotion_reference_group,
+        emotion_randomize_group,
+        emotion_vector_group,
+        emo_text_group,
+        emo_weight_group,
+    ]
+
+    def apply_emotion_preset_ui(preset_name):
+        """Fill the sliders and switch to vector control.
+
+        Without the mode switch the generator never reads the vector, so the
+        sliders move and the audio does not change.
+        """
+        return (
+            (gr.update(value=EMO_CHOICES_ALL[EMOTION_VECTOR_MODE_INDEX]),)
+            + apply_emotion_preset(preset_name)
+            + on_method_change(EMOTION_VECTOR_MODE_INDEX)
+        )
+
+    def apply_tone_preset_ui(preset_name):
+        """Fill the emotion-description box and switch to text-description mode.
+
+        That field is only read in mode 3, so selecting a tone has to move the
+        radio as well or the description is silently ignored.
+        """
+        description = tone_presets.tone_description(preset_name)
+        if not description:
+            # "None" clears the box but leaves the radio and the visible groups
+            # alone, so picking it does not yank the user out of the mode they
+            # were already working in.
+            return (gr.update(value=""), gr.update()) + tuple(
+                gr.update() for _ in range(EMOTION_GROUP_COUNT)
+            )
+        return (
+            gr.update(value=description),
+            gr.update(value=EMO_CHOICES_ALL[EMOTION_TEXT_MODE_INDEX]),
+        ) + on_method_change(EMOTION_TEXT_MODE_INDEX)
+
+    def reset_emotion_preset_ui():
+        """Send the dropdown, the sliders and the mode back to Neutral."""
+        neutral = emotion_presets.EMOTION_PRESET_NEUTRAL
+        return (gr.update(value=neutral),) + apply_emotion_preset_ui(neutral)
+
+    emotion_preset.change(
+        apply_emotion_preset_ui,
+        inputs=[emotion_preset],
+        outputs=[emo_control_method] + _EMOTION_SLIDERS + _EMOTION_GROUPS,
+        queue=False,
+        show_progress="hidden",
+    )
+
+    emotion_preset_reset_btn.click(
+        reset_emotion_preset_ui,
+        inputs=[],
+        outputs=[emotion_preset, emo_control_method] + _EMOTION_SLIDERS + _EMOTION_GROUPS,
+        queue=False,
+        show_progress="hidden",
+    )
+
+    tone_preset.change(
+        apply_tone_preset_ui,
+        inputs=[tone_preset],
+        outputs=[emo_text, emo_control_method] + _EMOTION_GROUPS,
+        queue=False,
+        show_progress="hidden",
+    )
+
+    def apply_voice_shaping_ui(audio_path, speed, semitones):
+        """Reshape the generated clip in place in the player."""
+        try:
+            shaped = voice_shaping.shape_audio(
+                audio_path,
+                speed=speed,
+                semitones=semitones,
+                output_dir=os.path.join(MEDIA_FETCH_OUTPUT_ROOT, voice_shaping.SHAPED_SUBDIR),
+            )
+        except voice_shaping.VoiceShapingError as exc:
+            return gr.update(), gr.update(value=f"WARNING: {exc}", visible=True)
+
+        if shaped == audio_path:
+            return gr.update(), gr.update(
+                value=voice_shaping.describe_shaping(speed, semitones), visible=True
+            )
+        summary = voice_shaping.describe_shaping(speed, semitones)
+        return (
+            gr.update(value=shaped),
+            gr.update(value=f"Applied {summary}.", visible=True),
+        )
+
+    def reset_voice_shaping_ui():
+        """Send both sliders back to their neutral values."""
+        return (
+            gr.update(value=voice_shaping.SPEED_DEFAULT),
+            gr.update(value=voice_shaping.PITCH_DEFAULT_SEMITONES),
+            gr.update(value="Speed and pitch reset.", visible=True),
+        )
+
+    shaping_apply_btn.click(
+        apply_voice_shaping_ui,
+        inputs=[output_audio, shaping_speed, shaping_pitch],
+        outputs=[output_audio, shaping_status],
+        show_progress="minimal",
+    )
+
+    shaping_reset_btn.click(
+        reset_voice_shaping_ui,
+        inputs=[],
+        outputs=[shaping_speed, shaping_pitch, shaping_status],
+        queue=False,
+        show_progress="hidden",
+    )
+
+    device_dropdown.change(
+        on_device_change,
+        inputs=[device_dropdown],
+        outputs=[device_status],
+        queue=False,
+        show_progress="hidden",
+    )
+
 if __name__ == "__main__":
     demo.queue(20)
     demo.launch(
+        # --host and --port were parsed but never forwarded, so the app always
+        # bound 127.0.0.1 and no other device on the network could reach it.
+        server_name=cmd_args.host,
+        server_port=cmd_args.port,
         share=cmd_args.share,
         inbrowser=True,
         theme=theme,
