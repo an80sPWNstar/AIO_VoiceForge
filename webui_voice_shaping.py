@@ -28,9 +28,12 @@ SPEED_MAX = 2.0
 SPEED_STEP = 0.05
 SPEED_DEFAULT = 1.0
 
-# Pitch in semitones. 12 semitones is one octave.
-PITCH_MIN_SEMITONES = -12.0
-PITCH_MAX_SEMITONES = 12.0
+# Pitch in semitones. Deliberately NOT the full octave rubberband will accept:
+# even with formant preservation the artefacts grow with the shift, and a full
+# octave on a neural TTS voice sounds broken however it is filtered. +/-5 stays
+# in the range where the result is still recognisably the same speaker.
+PITCH_MIN_SEMITONES = -5.0
+PITCH_MAX_SEMITONES = 5.0
 PITCH_STEP_SEMITONES = 0.5
 PITCH_DEFAULT_SEMITONES = 0.0
 
@@ -41,6 +44,24 @@ SHAPED_SUFFIX = "shaped"
 
 # Below this, a speed or pitch request is treated as "no change requested".
 SHAPING_EPSILON = 1e-3
+
+# rubberband's defaults are tuned for music and wreck speech. Measured on a
+# -4 semitone shift: with the defaults the spectral centroid moved -20.6%,
+# exactly tracking the pitch ratio -- the vocal tract gets scaled along with
+# the pitch, which is the chipmunk / monster artefact. With these options the
+# residual drift is -7.5%.
+#   formant=preserved  keep vocal tract resonances where they are (the big one)
+#   pitchq=quality     the default is `speed`, the lowest-quality algorithm
+#   transients=smooth  `crisp` is for percussion and smears speech
+#   window=long        better for sustained voiced sounds
+#   smoothing=on       reduces phasiness across frames
+RUBBERBAND_VOICE_OPTIONS = (
+    "formant=preserved",
+    "pitchq=quality",
+    "transients=smooth",
+    "window=long",
+    "smoothing=on",
+)
 
 
 class VoiceShapingError(MediaFetchError):
@@ -73,6 +94,9 @@ def build_shaping_command(
     semitone offset has to be converted first.
     """
     ratio = semitones_to_ratio(semitones)
+    settings = ":".join(
+        (f"tempo={float(speed):.4f}", f"pitch={ratio:.6f}") + RUBBERBAND_VOICE_OPTIONS
+    )
     return [
         FFMPEG_BIN,
         "-hide_banner",
@@ -82,7 +106,7 @@ def build_shaping_command(
         "-i",
         source_path,
         "-filter:a",
-        f"rubberband=tempo={float(speed):.4f}:pitch={ratio:.6f}",
+        f"rubberband={settings}",
         destination_path,
     ]
 

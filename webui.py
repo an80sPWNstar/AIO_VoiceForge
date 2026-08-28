@@ -2527,6 +2527,14 @@ with gr.Blocks(title=APP_TITLE) as demo:
                         value=tone_presets.TONE_PRESET_NONE,
                         info="Describes HOW to say it (low and deep, whispered...). Never spoken aloud.",
                     )
+                    gr.Markdown(
+                        "**For emphasis, CAPITALISE the word** you want stressed "
+                        "in the text itself - `I told you NOT to do that`, or part "
+                        "of a word, `absoLUTEly`. That works where the emotion "
+                        "controls do not, because stress is decided by the text, "
+                        "not by tone.",
+                        elem_classes="top-section-flat",
+                    )
         # 情感参考音频部分
         with gr.Group(visible=False) as emotion_reference_group:
             with gr.Row():
