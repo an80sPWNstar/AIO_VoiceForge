@@ -86,6 +86,7 @@ from indextts.utils.task_output_utils import (
     write_metadata_file,
 )
 from tools.i18n.i18n import I18nAuto
+import webui_media_fetch as media_fetch
 from webui_generation_runner import create_tts as create_generation_tts, run_generation_request
 
 i18n = I18nAuto(language="Auto")
@@ -1820,6 +1821,118 @@ def _delete_ui_preset(preset_name: str) -> bool:
         return False
 
 
+# --------------------------------------------------------------------------
+# Media Fetch tab -- handlers
+# --------------------------------------------------------------------------
+
+MEDIA_FETCH_OUTPUT_ROOT = os.path.join("outputs", "media_fetch")
+MEDIA_FETCH_EMPTY_INFO = "Paste a URL and press **Fetch Info** to see what is there."
+MEDIA_FETCH_GAIN_MIN_DB = -20.0
+MEDIA_FETCH_GAIN_MAX_DB = 20.0
+MEDIA_FETCH_GAIN_STEP_DB = 0.5
+MEDIA_FETCH_LOG_LINES = 12
+
+
+def media_fetch_format_choices():
+    """Dropdown choices for the output format, filtered to what ffmpeg can do."""
+    return [(fmt.label, fmt.key) for fmt in media_fetch.usable_formats()]
+
+
+def media_fetch_environment_note():
+    """One-line readiness note shown under the tab heading."""
+    ytdlp = media_fetch.ytdlp_version()
+    parts = []
+    parts.append(f"yt-dlp **{ytdlp}**" if ytdlp else "yt-dlp **not installed**")
+    parts.append("ffmpeg **found**" if media_fetch.ffmpeg_available() else "ffmpeg **missing**")
+    return " | ".join(parts)
+
+
+def media_fetch_probe_ui(url, cookies_browser):
+    """Fetch Info button: read metadata without downloading anything."""
+    try:
+        info = media_fetch.probe_media_info(url, cookies_browser)
+    except media_fetch.MediaFetchError as exc:
+        return gr.update(value=f"WARNING: {exc}")
+
+    duration = info.get("duration_seconds")
+    if duration:
+        minutes, seconds = divmod(int(duration), 60)
+        duration_text = f"{minutes}:{seconds:02d}"
+    else:
+        duration_text = "unknown"
+
+    lines = [
+        f"**{info['title']}**",
+        f"- Uploader: {info['uploader']}",
+        f"- Duration: {duration_text}",
+        f"- Source: {info['extractor']}",
+    ]
+    return gr.update(value="\n".join(lines))
+
+
+def media_fetch_run_ui(
+    url,
+    cookies_browser,
+    download_mode,
+    format_key,
+    sample_rate,
+    channel_mode,
+    start_time,
+    end_time,
+    normalize,
+    gain_db,
+    keep_source,
+):
+    """Download & Extract button: run the whole pipeline and report the result."""
+    try:
+        start_seconds = media_fetch.parse_time_to_seconds(start_time)
+        end_seconds = media_fetch.parse_time_to_seconds(end_time)
+        result = media_fetch.fetch_and_extract(
+            url=url,
+            output_root=MEDIA_FETCH_OUTPUT_ROOT,
+            format_key=format_key,
+            sample_rate=int(sample_rate),
+            channel_mode=channel_mode,
+            start_seconds=start_seconds,
+            end_seconds=end_seconds,
+            normalize=bool(normalize),
+            gain_db=float(gain_db),
+            download_mode=download_mode,
+            cookies_from_browser=cookies_browser,
+            keep_source_file=bool(keep_source),
+        )
+    except media_fetch.MediaFetchError as exc:
+        return (
+            gr.update(value=None),
+            gr.update(value=""),
+            gr.update(value=f"WARNING: {exc}", visible=True),
+            gr.update(value=str(exc)),
+        )
+
+    audio_path = result["audio_path"]
+    log_text = "\n".join(result["log"][-MEDIA_FETCH_LOG_LINES:])
+    status = f"Saved {os.path.basename(audio_path)} from \"{result['title']}\"."
+    return (
+        gr.update(value=audio_path),
+        gr.update(value=audio_path),
+        gr.update(value=status, visible=True),
+        gr.update(value=log_text),
+    )
+
+
+def media_fetch_open_folder():
+    """Open the media_fetch output directory in the system file browser."""
+    target = os.path.abspath(MEDIA_FETCH_OUTPUT_ROOT)
+    os.makedirs(target, exist_ok=True)
+    if platform.system() == "Windows":
+        os.startfile(target)
+    elif platform.system() == "Darwin":
+        subprocess.Popen(["open", target])
+    else:
+        subprocess.Popen(["xdg-open", target])
+    return gr.update(value=f"Opened {target}", visible=True)
+
+
 theme = gr.themes.Soft()
 theme.font = [gr.themes.GoogleFont("Inter"), "Tahoma", "ui-sans-serif", "system-ui", "sans-serif"]
 with gr.Blocks(title=APP_TITLE) as demo:
@@ -2730,6 +2843,108 @@ with gr.Blocks(title=APP_TITLE) as demo:
                 f"✅ Deleted preset **{requested}**" if ok else f"WARNING: Could not delete preset **{requested}**",
             )
 
+    with gr.Tab("Download & Extract Audio"):
+        gr.Markdown("### Download from YouTube or any other site yt-dlp supports, then extract the audio")
+        gr.Markdown(media_fetch_environment_note())
+        gr.Markdown(
+            "Only download material you own or otherwise have the right to use."
+        )
+
+        with gr.Row(equal_height=False):
+            with gr.Column(scale=1, min_width=320):
+                with gr.Group():
+                    gr.Markdown("#### Source")
+                    mf_url = gr.Textbox(
+                        label="Video / audio URL",
+                        placeholder="https://www.youtube.com/watch?v=...",
+                        lines=1,
+                    )
+                    with gr.Row():
+                        mf_fetch_info_btn = gr.Button("Fetch Info", variant="secondary")
+                        mf_cookies_browser = gr.Dropdown(
+                            label="Cookies from browser",
+                            choices=media_fetch.COOKIES_BROWSERS,
+                            value=media_fetch.COOKIES_NONE,
+                            info="Needed for age-restricted or members-only media.",
+                        )
+                    mf_download_mode = gr.Radio(
+                        label="Download mode",
+                        choices=media_fetch.DOWNLOAD_MODES,
+                        value=media_fetch.DEFAULT_DOWNLOAD_MODE,
+                    )
+                    mf_keep_source = gr.Checkbox(
+                        label="Keep the downloaded source file",
+                        value=True,
+                    )
+                    mf_info = gr.Markdown(MEDIA_FETCH_EMPTY_INFO)
+
+            with gr.Column(scale=1, min_width=320):
+                with gr.Group():
+                    gr.Markdown("#### Audio output")
+                    mf_format = gr.Dropdown(
+                        label="Format",
+                        choices=media_fetch_format_choices(),
+                        value=media_fetch.DEFAULT_FORMAT_KEY,
+                    )
+                    with gr.Row():
+                        mf_sample_rate = gr.Dropdown(
+                            label="Sample rate (Hz)",
+                            choices=media_fetch.SAMPLE_RATES,
+                            value=media_fetch.DEFAULT_SAMPLE_RATE,
+                        )
+                        mf_channels = gr.Radio(
+                            label="Channels",
+                            choices=media_fetch.CHANNEL_MODES,
+                            value=media_fetch.DEFAULT_CHANNEL_MODE,
+                        )
+                    with gr.Row():
+                        mf_start_time = gr.Textbox(
+                            label="Trim start",
+                            placeholder="0:15 or 15",
+                            lines=1,
+                        )
+                        mf_end_time = gr.Textbox(
+                            label="Trim end",
+                            placeholder="0:45 or 45",
+                            lines=1,
+                        )
+                    mf_normalize = gr.Checkbox(
+                        label="Normalise loudness (EBU R128)",
+                        value=False,
+                    )
+                    mf_gain = gr.Slider(
+                        label="Extra gain (dB)",
+                        minimum=MEDIA_FETCH_GAIN_MIN_DB,
+                        maximum=MEDIA_FETCH_GAIN_MAX_DB,
+                        step=MEDIA_FETCH_GAIN_STEP_DB,
+                        value=0.0,
+                    )
+
+        with gr.Row():
+            mf_run_btn = gr.Button("Download & Extract", variant="primary", scale=2)
+            mf_send_btn = gr.Button("Send to Reference Voice", variant="secondary", scale=1)
+            mf_open_folder_btn = gr.Button("Open Output Folder", variant="secondary", scale=1)
+
+        mf_status = gr.Textbox(label="Status", value="", visible=False, interactive=False)
+
+        with gr.Row():
+            with gr.Column(scale=1):
+                mf_result_audio = gr.Audio(label="Extracted audio", type="filepath")
+                mf_result_path = gr.Textbox(
+                    label="Saved to",
+                    value="",
+                    interactive=False,
+                    lines=1,
+                )
+            with gr.Column(scale=1):
+                mf_log = gr.Textbox(
+                    label="Log",
+                    value="",
+                    interactive=False,
+                    lines=MEDIA_FETCH_LOG_LINES,
+                    max_lines=MEDIA_FETCH_LOG_LINES,
+                )
+
     def process_media_to_reference(media_path, time_ranges="", require_time_ranges=False):
         if not media_path:
             if require_time_ranges:
@@ -3037,6 +3252,67 @@ with gr.Blocks(title=APP_TITLE) as demo:
     )
 
 
+
+    # ----------------------------------------------------------------------
+    # Media Fetch tab -- event wiring
+    # ----------------------------------------------------------------------
+
+    def send_fetched_to_reference(fetched_path):
+        """Load the freshly extracted audio into the reference voice slot."""
+        if not fetched_path:
+            return (
+                gr.update(),
+                gr.update(value="Download and extract an audio file first.", visible=True),
+            )
+        extracted_audio, status = process_media_to_reference(fetched_path)
+        if not extracted_audio:
+            return (
+                gr.update(),
+                gr.update(value=status or "Could not load that file.", visible=True),
+            )
+        return gr.update(value=extracted_audio), gr.update(value=status, visible=True)
+
+    mf_fetch_info_btn.click(
+        media_fetch_probe_ui,
+        inputs=[mf_url, mf_cookies_browser],
+        outputs=[mf_info],
+        show_progress="minimal",
+    )
+
+    mf_run_btn.click(
+        media_fetch_run_ui,
+        inputs=[
+            mf_url,
+            mf_cookies_browser,
+            mf_download_mode,
+            mf_format,
+            mf_sample_rate,
+            mf_channels,
+            mf_start_time,
+            mf_end_time,
+            mf_normalize,
+            mf_gain,
+            mf_keep_source,
+        ],
+        outputs=[mf_result_audio, mf_result_path, mf_status, mf_log],
+        show_progress="full",
+    )
+
+    mf_send_btn.click(
+        send_fetched_to_reference,
+        inputs=[mf_result_path],
+        outputs=[prompt_audio, reference_status],
+        queue=False,
+        show_progress="hidden",
+    )
+
+    mf_open_folder_btn.click(
+        media_fetch_open_folder,
+        inputs=[],
+        outputs=[mf_status],
+        queue=False,
+        show_progress="hidden",
+    )
 
 if __name__ == "__main__":
     demo.queue(20)
