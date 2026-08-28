@@ -88,7 +88,6 @@ from indextts.utils.task_output_utils import (
 )
 from tools.i18n.i18n import I18nAuto
 import webui_media_fetch as media_fetch
-import webui_emotion_presets as emotion_presets
 import webui_voice_shaping as voice_shaping
 import webui_tone_presets as tone_presets
 from webui_generation_runner import create_tts as create_generation_tts, run_generation_request
@@ -2014,11 +2013,6 @@ MEDIA_FETCH_THREAD_JOIN_SECONDS = 30
 
 
 
-# Index into EMO_CHOICES_ALL of "Use emotion vector control". The emotion
-# vector is ONLY read by the generator in this mode, so choosing a preset has
-# to switch here or the slider values are silently ignored.
-EMOTION_VECTOR_MODE_INDEX = 2
-
 # Index of "Use emotion text description". The emo_text field is only read in
 # this mode, so a tone preset has to switch here for the description to matter.
 EMOTION_TEXT_MODE_INDEX = 3
@@ -2027,12 +2021,6 @@ EMOTION_TEXT_MODE_INDEX = 3
 # handler that wants to leave them all alone can emit the right number of
 # no-op updates without hardcoding it in two places.
 EMOTION_GROUP_COUNT = 5
-
-
-def apply_emotion_preset(preset_name):
-    """Push a preset's eight values onto the vec1..vec8 sliders."""
-    return tuple(gr.update(value=value)
-                 for value in emotion_presets.preset_vector(preset_name))
 
 
 # --------------------------------------------------------------------------
@@ -2510,16 +2498,6 @@ with gr.Blocks(title=APP_TITLE) as demo:
                     label="Emotion Control Method",
                     info="Choose how to control emotions: Speaker's natural emotion, reference audio emotion, manual vector control, or text description"
                 )
-                with gr.Column(min_width=230):
-                    emotion_preset = gr.Dropdown(
-                        label="Emotion preset",
-                        choices=emotion_presets.EMOTION_PRESET_NAMES,
-                        value=emotion_presets.EMOTION_PRESET_NEUTRAL,
-                        info="Switches to vector control and fills the eight sliders. Tune them afterwards.",
-                    )
-                    emotion_preset_reset_btn = gr.Button(
-                        "Reset to Neutral", variant="secondary"
-                    )
                 with gr.Column(min_width=230):
                     tone_preset = gr.Dropdown(
                         label="Tone / delivery preset",
@@ -3715,7 +3693,6 @@ with gr.Blocks(title=APP_TITLE) as demo:
     # Emotion presets and compute device
     # ----------------------------------------------------------------------
 
-    _EMOTION_SLIDERS = [vec1, vec2, vec3, vec4, vec5, vec6, vec7, vec8]
     _EMOTION_GROUPS = [
         emotion_reference_group,
         emotion_randomize_group,
@@ -3723,18 +3700,6 @@ with gr.Blocks(title=APP_TITLE) as demo:
         emo_text_group,
         emo_weight_group,
     ]
-
-    def apply_emotion_preset_ui(preset_name):
-        """Fill the sliders and switch to vector control.
-
-        Without the mode switch the generator never reads the vector, so the
-        sliders move and the audio does not change.
-        """
-        return (
-            (gr.update(value=EMO_CHOICES_ALL[EMOTION_VECTOR_MODE_INDEX]),)
-            + apply_emotion_preset(preset_name)
-            + on_method_change(EMOTION_VECTOR_MODE_INDEX)
-        )
 
     def apply_tone_preset_ui(preset_name):
         """Fill the emotion-description box and switch to text-description mode.
@@ -3754,27 +3719,6 @@ with gr.Blocks(title=APP_TITLE) as demo:
             gr.update(value=description),
             gr.update(value=EMO_CHOICES_ALL[EMOTION_TEXT_MODE_INDEX]),
         ) + on_method_change(EMOTION_TEXT_MODE_INDEX)
-
-    def reset_emotion_preset_ui():
-        """Send the dropdown, the sliders and the mode back to Neutral."""
-        neutral = emotion_presets.EMOTION_PRESET_NEUTRAL
-        return (gr.update(value=neutral),) + apply_emotion_preset_ui(neutral)
-
-    emotion_preset.change(
-        apply_emotion_preset_ui,
-        inputs=[emotion_preset],
-        outputs=[emo_control_method] + _EMOTION_SLIDERS + _EMOTION_GROUPS,
-        queue=False,
-        show_progress="hidden",
-    )
-
-    emotion_preset_reset_btn.click(
-        reset_emotion_preset_ui,
-        inputs=[],
-        outputs=[emotion_preset, emo_control_method] + _EMOTION_SLIDERS + _EMOTION_GROUPS,
-        queue=False,
-        show_progress="hidden",
-    )
 
     tone_preset.change(
         apply_tone_preset_ui,

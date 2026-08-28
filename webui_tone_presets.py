@@ -48,8 +48,14 @@ TONE_DESCRIPTION_PRESETS: Dict[str, str] = {
     "Cold and detached": "speak flatly with even pitch clipped words and no emotional colour",
 
     # --- warm / intimate -------------------------------------------------
+    # Four neighbouring moods, kept apart on concrete axes so they do not
+    # collapse into one another: Sultry is languid, Sexy is poised and even,
+    # Flirty is quick and rising, Kinky is slow and firmly controlled.
     "Warm and intimate": "speak softly and warmly in a low close voice with relaxed pacing",
     "Sultry": "speak slowly in a low warm voice with breathy relaxed unhurried delivery",
+    "Sexy": "speak smoothly and confidently in a low warm voice with deliberate unhurried pacing",
+    "Flirty": "say playfully and softly with a light teasing lilt and quick rising pitch",
+    "Kinky": "speak slowly and firmly in a low teasing voice with deliberate playful emphasis",
     "Gentle and reassuring": "speak gently and calmly with steady pitch and smooth soothing pacing",
 
     # --- emotional range -------------------------------------------------
