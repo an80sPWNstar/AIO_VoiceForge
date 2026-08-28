@@ -1832,6 +1832,21 @@ MEDIA_FETCH_GAIN_MAX_DB = 20.0
 MEDIA_FETCH_GAIN_STEP_DB = 0.5
 MEDIA_FETCH_LOG_LINES = 12
 
+# Label of the tab that owns the reference voice, and the client-side hop that
+# focuses it after a hand-off. Gradio's own tab selection needs an explicit
+# gr.Tabs(id=...) parent, which this file does not have.
+MEDIA_FETCH_GENERATION_TAB_LABEL = "Audio Generation"
+MEDIA_FETCH_FOCUS_GENERATION_TAB_JS = (
+    "() => {"
+    f"  const target = {json.dumps(MEDIA_FETCH_GENERATION_TAB_LABEL)};"
+    "  const all = Array.from(document.querySelectorAll('button'))"
+    "      .filter(b => b.textContent.trim() === target);"
+    "  const visible = all.filter(b => b.offsetParent !== null);"
+    "  const tab = visible.length ? visible[visible.length - 1] : all[0];"
+    "  if (tab) tab.click();"
+    "}"
+)
+
 
 def media_fetch_format_choices():
     """Dropdown choices for the output format, filtered to what ffmpeg can do."""
@@ -3304,6 +3319,15 @@ with gr.Blocks(title=APP_TITLE) as demo:
         outputs=[prompt_audio, reference_status],
         queue=False,
         show_progress="hidden",
+    ).then(
+        fn=None,
+        inputs=None,
+        outputs=None,
+        # Jump to the generation tab so the hand-off is visible. Done in the
+        # browser because selecting a tab from Python needs an explicit
+        # gr.Tabs(id=...) parent, which would mean re-indenting every existing
+        # tab in this file and conflicting with every upstream pull.
+        js=MEDIA_FETCH_FOCUS_GENERATION_TAB_JS,
     )
 
     mf_open_folder_btn.click(
