@@ -5,6 +5,13 @@ then transcodes the audio track into a format suitable for use as a TTS
 reference voice.
 
 This module is standalone: it imports nothing from webui.py.
+
+REQUIRES gradio 6.10.0. Gradio 6.11.0 has an upstream regression where
+switching to a tab whose contents were hidden sends Svelte into an infinite
+effect loop (effect_update_depth_exceeded) and locks the browser tab up:
+https://github.com/gradio-app/gradio/issues/13285
+The tab this module backs is the one that triggers it. Re-test tab switching
+before bumping gradio.
 """
 
 import json
