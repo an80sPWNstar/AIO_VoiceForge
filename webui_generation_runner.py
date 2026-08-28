@@ -56,12 +56,16 @@ FFMPEG_AVAILABLE = check_ffmpeg()
 def create_tts(runtime_options: Dict[str, Any]):
     from indextts.infer_v2 import IndexTTS2
 
+    # device is None for "auto", which is what IndexTTS2 already expected: it
+    # then picks cuda:0 / xpu / mps / cpu itself, exactly as before this option
+    # existed. A string like "cuda:1" or "cpu" pins it instead.
     return IndexTTS2(
         model_dir=runtime_options["model_dir"],
         cfg_path=runtime_options["cfg_path"],
         use_fp16=bool(runtime_options.get("use_fp16")),
         use_deepspeed=bool(runtime_options.get("use_deepspeed")),
         use_cuda_kernel=bool(runtime_options.get("use_cuda_kernel")),
+        device=runtime_options.get("device"),
     )
 
 

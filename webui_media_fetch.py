@@ -86,6 +86,48 @@ class MediaFetchError(RuntimeError):
 
 
 # --------------------------------------------------------------------------
+# Progress reporting
+# --------------------------------------------------------------------------
+
+PHASE_RESOLVE = "resolve"
+PHASE_DOWNLOAD = "download"
+PHASE_EXTRACT = "extract"
+PHASE_DONE = "done"
+
+# (start, end) of the overall 0..1 bar that each phase owns. Downloading is by
+# far the longest leg, so it gets most of the bar.
+PHASE_SPANS: Dict[str, Tuple[float, float]] = {
+    PHASE_RESOLVE: (0.00, 0.05),
+    PHASE_DOWNLOAD: (0.05, 0.75),
+    PHASE_EXTRACT: (0.75, 0.97),
+    PHASE_DONE: (0.97, 1.00),
+}
+
+
+@dataclass(frozen=True)
+class FetchProgress:
+    """One progress event emitted while fetching and transcoding.
+
+    `fraction` is progress across the WHOLE pipeline (0..1), already mapped
+    through PHASE_SPANS, or None when this phase cannot measure itself.
+    """
+
+    phase: str
+    message: str
+    fraction: Optional[float] = None
+
+
+ProgressCallback = Callable[[FetchProgress], None]
+
+
+def _phase_fraction(phase: str, within_phase: float) -> float:
+    """Map 0..1 progress inside `phase` onto the overall 0..1 bar."""
+    start, end = PHASE_SPANS.get(phase, (0.0, 1.0))
+    clamped = min(max(within_phase, 0.0), 1.0)
+    return start + (end - start) * clamped
+
+
+# --------------------------------------------------------------------------
 # Environment probes
 # --------------------------------------------------------------------------
 
@@ -458,27 +500,37 @@ def download_media(
     destination_dir: str,
     download_mode: str = DEFAULT_DOWNLOAD_MODE,
     cookies_from_browser: str = COOKIES_NONE,
-    progress_callback: Optional[Callable[[str], None]] = None,
+    progress_callback: Optional[ProgressCallback] = None,
 ) -> Tuple[str, Dict[str, Any]]:
     """Download `url` into `destination_dir`.
 
     Returns (downloaded_file_path, media_info_dict). Raises MediaFetchError on
-    any failure. `progress_callback` receives short human readable status lines.
+    any failure. `progress_callback` receives FetchProgress events.
     """
     yt_dlp = _import_ytdlp()
     os.makedirs(destination_dir, exist_ok=True)
 
-    def _report(message: str) -> None:
+    def _report(message: str, fraction: Optional[float] = None) -> None:
         if progress_callback is not None:
-            progress_callback(message)
+            progress_callback(FetchProgress(PHASE_DOWNLOAD, message, fraction))
 
     def _hook(status: Dict[str, Any]) -> None:
-        if status.get("status") == "downloading":
+        state = status.get("status")
+        if state == "downloading":
+            done = status.get("downloaded_bytes")
+            total = status.get("total_bytes") or status.get("total_bytes_estimate")
+            fraction = None
+            if isinstance(done, (int, float)) and isinstance(total, (int, float)) and total > 0:
+                fraction = _phase_fraction(PHASE_DOWNLOAD, min(done / total, 1.0))
             percent = status.get("_percent_str", "").strip()
             speed = status.get("_speed_str", "").strip()
-            _report(f"Downloading {percent} at {speed}")
-        elif status.get("status") == "finished":
-            _report("Download finished, post-processing...")
+            eta = status.get("_eta_str", "").strip()
+            detail = " ".join(part for part in (percent, f"at {speed}" if speed else "",
+                                                f"ETA {eta}" if eta else "") if part)
+            _report(f"Downloading {detail}".rstrip(), fraction)
+        elif state == "finished":
+            _report("Download finished, post-processing...",
+                    _phase_fraction(PHASE_DOWNLOAD, 1.0))
 
     wants_video = download_mode == DOWNLOAD_WITH_VIDEO
     options: Dict[str, Any] = {
@@ -559,19 +611,25 @@ def fetch_and_extract(
     download_mode: str = DEFAULT_DOWNLOAD_MODE,
     cookies_from_browser: str = COOKIES_NONE,
     keep_source_file: bool = True,
-    progress_callback: Optional[Callable[[str], None]] = None,
+    progress_callback: Optional[ProgressCallback] = None,
 ) -> Dict[str, Any]:
     """Download `url` and transcode its audio track.
 
     Returns a dict with keys: audio_path, source_path, title, log (list of str).
-    Raises MediaFetchError on any failure.
+    Raises MediaFetchError on any failure. `progress_callback` receives
+    FetchProgress events covering the whole pipeline.
     """
     log: List[str] = []
 
-    def _report(message: str) -> None:
-        log.append(message)
+    def _emit(event: FetchProgress) -> None:
+        log.append(event.message)
         if progress_callback is not None:
-            progress_callback(message)
+            progress_callback(event)
+
+    def _report(message: str, phase: str = PHASE_RESOLVE,
+                within_phase: Optional[float] = None) -> None:
+        fraction = None if within_phase is None else _phase_fraction(phase, within_phase)
+        _emit(FetchProgress(phase, message, fraction))
 
     clean_url = validate_url(url)
     if not ffmpeg_available():
@@ -586,20 +644,22 @@ def fetch_and_extract(
     extracted_dir = os.path.join(output_root, EXTRACTED_SUBDIR)
     os.makedirs(extracted_dir, exist_ok=True)
 
-    _report(f"Resolving {clean_url}")
+    _report(f"Resolving {clean_url}", PHASE_RESOLVE, 0.5)
     source_path, media_info = download_media(
         clean_url,
         download_dir,
         download_mode=download_mode,
         cookies_from_browser=cookies_from_browser,
-        progress_callback=_report,
+        # download_media emits FetchProgress objects directly, so it gets the
+        # raw sink -- _report builds events, it does not consume them.
+        progress_callback=_emit,
     )
-    _report(f"Downloaded: {os.path.basename(source_path)}")
+    _report(f"Downloaded: {os.path.basename(source_path)}", PHASE_DOWNLOAD, 1.0)
 
     stem = sanitize_filename(media_info["title"])
     destination = unique_path(extracted_dir, stem, audio_format.extension)
 
-    _report(f"Extracting audio -> {audio_format.label}")
+    _report(f"Extracting audio -> {audio_format.label}", PHASE_EXTRACT, 0.1)
     command = build_ffmpeg_command(
         source_path=source_path,
         destination_path=destination,
@@ -616,18 +676,20 @@ def fetch_and_extract(
     if not os.path.exists(destination):
         raise MediaFetchError(f"ffmpeg reported success but produced no file: {destination}")
 
+    _report("Transcode complete.", PHASE_EXTRACT, 1.0)
+
     duration = probe_duration_seconds(destination)
     if duration is not None:
-        _report(f"Output duration: {duration:.2f}s")
+        _report(f"Output duration: {duration:.2f}s", PHASE_DONE, 0.3)
 
     if not keep_source_file and os.path.exists(source_path):
         try:
             os.remove(source_path)
-            _report("Removed the downloaded source file.")
+            _report("Removed the downloaded source file.", PHASE_DONE, 0.6)
         except OSError as exc:
-            _report(f"Could not remove source file: {exc}")
+            _report(f"Could not remove source file: {exc}", PHASE_DONE, 0.6)
 
-    _report(f"Done: {destination}")
+    _report(f"Done: {destination}", PHASE_DONE, 1.0)
     return {
         "audio_path": destination,
         "source_path": source_path if os.path.exists(source_path) else None,
