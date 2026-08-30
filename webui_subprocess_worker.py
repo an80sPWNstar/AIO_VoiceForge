@@ -10,9 +10,13 @@ import traceback
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 if CURRENT_DIR not in sys.path:
     sys.path.append(CURRENT_DIR)
-INDEXTTS_DIR = os.path.join(CURRENT_DIR, "indextts")
-if INDEXTTS_DIR not in sys.path:
-    sys.path.append(INDEXTTS_DIR)
+
+# This has to happen before webui_generation_runner is imported: that module
+# imports from `indextts` at module level, and the import has to land in the
+# IndexTTS-2.5 checkout rather than the 2.0 package still sitting in this repo.
+import engine_paths
+
+engine_paths.prepend_engine_to_sys_path()
 
 from webui_generation_runner import create_tts, run_generation_request
 

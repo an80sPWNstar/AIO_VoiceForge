@@ -10,7 +10,7 @@ from typing import Any, Callable, Dict, Optional
 
 import numpy as np
 
-from indextts.utils.subtitle_utils import (
+from subtitle_utils import (
     assemble_subtitle_audio,
     build_subtitle_render_units,
     ensure_audio_matrix,
@@ -22,7 +22,7 @@ from indextts.utils.subtitle_utils import (
     retime_audio_file_with_ffmpeg,
     write_pcm16_wav,
 )
-from indextts.utils.task_output_utils import build_segment_output_path, write_metadata_file
+from task_output_utils import build_segment_output_path, write_metadata_file
 
 try:
     from pydub import AudioSegment
@@ -54,7 +54,11 @@ FFMPEG_AVAILABLE = check_ffmpeg()
 
 
 def create_tts(runtime_options: Dict[str, Any]):
-    from indextts.infer_v2 import IndexTTS2
+    # IndexTTS-2.5 lives in its own checkout with its own interpreter, because it
+    # needs numpy 2.x against this app's numpy 1.26. The worker puts that checkout
+    # first on sys.path, so `indextts` here is 2.5's package, not the one vendored
+    # beside this file.
+    from indextts.infer_v2_5 import IndexTTS2
 
     # device is None for "auto", which is what IndexTTS2 already expected: it
     # then picks cuda:0 / xpu / mps / cpu itself, exactly as before this option
@@ -62,7 +66,7 @@ def create_tts(runtime_options: Dict[str, Any]):
     return IndexTTS2(
         model_dir=runtime_options["model_dir"],
         cfg_path=runtime_options["cfg_path"],
-        use_fp16=bool(runtime_options.get("use_fp16")),
+        use_bf16=bool(runtime_options.get("use_fp16")),
         use_deepspeed=bool(runtime_options.get("use_deepspeed")),
         use_cuda_kernel=bool(runtime_options.get("use_cuda_kernel")),
         device=runtime_options.get("device"),
@@ -383,7 +387,11 @@ def run_generation_request(
     video_output = None
 
     tts.gr_progress = progress_callback
-    tts.hybrid_model_device = low_memory_mode
+    # Low-memory mode was a fork-only attribute on the 2.0 engine. IndexTTS-2.5
+    # has no equivalent, so setting it is a no-op rather than an error: assigning
+    # it blindly would silently create an attribute the engine never reads.
+    if hasattr(tts, "hybrid_model_device"):
+        tts.hybrid_model_device = low_memory_mode
 
     try:
         subtitle_cues = parse_subtitle_file(subtitle_file) if subtitle_mode else []
@@ -392,6 +400,15 @@ def run_generation_request(
         if subtitle_mode:
             if not subtitle_cues:
                 raise ValueError("No caption cues were found in the selected file.")
+            # Caption timing renders each cue separately through infer_texts, which
+            # was added by the 2.0 fork and has no counterpart in IndexTTS-2.5.
+            # Say so here rather than failing several minutes into a render.
+            if not hasattr(tts, "infer_texts"):
+                raise ValueError(
+                    "Caption timing mode is not available on the IndexTTS-2.5 engine: "
+                    "it needs the per-cue infer_texts call the previous engine provided. "
+                    "Turn caption timing off to generate this text."
+                )
 
             rendered_units = []
             original_progress = tts.gr_progress

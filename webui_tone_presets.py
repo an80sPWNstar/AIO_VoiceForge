@@ -73,6 +73,53 @@ TONE_DESCRIPTION_PRESETS: Dict[str, str] = {
 
 TONE_PRESET_NAMES: List[str] = list(TONE_DESCRIPTION_PRESETS)
 
+# The speaking-rate factor the Speed control starts on, and what any preset
+# with no opinion about pace seeds. IndexTTS-2.5 reads this as duration_factor,
+# where ABOVE 1.0 is slower and BELOW 1.0 is faster.
+DEFAULT_TONE_SPEED = 1.15
+TONE_SPEED_MIN = 0.5
+TONE_SPEED_MAX = 2.0
+
+# A description steers timbre and manner; the engine's speed control steers
+# pace. Both move together so that picking "Slow and deliberate" is actually
+# slower, instead of only describing itself as slower.
+#
+# Every factor agrees with the words it ships with, which _self_check enforces:
+# a direction saying slow / unhurried / deliberate sits above 1.0, one saying
+# quick / fast / lively sits below it, and a description silent about pace
+# seeds the default.
+TONE_PRESET_SPEEDS: Dict[str, float] = {
+    "None": DEFAULT_TONE_SPEED,
+
+    "Low and deep": 1.15,
+    "Soft and breathy": 1.15,
+    "Whispered": 1.15,
+    "Slow and deliberate": 1.25,
+    "Bright and energetic": 0.90,
+    "Commanding": 1.00,
+    "Cold and detached": 1.00,
+
+    "Warm and intimate": 1.00,
+    "Sultry": 1.20,
+    "Sexy": 1.20,
+    "Flirty": 0.95,
+    "Kinky": 1.20,
+    "Gentle and reassuring": 1.00,
+
+    "Happy": 0.95,
+    "Excited": 0.85,
+    "Sad": 1.15,
+    "Angry": 1.00,
+    "Fearful": 0.90,
+    "Urgent": 0.85,
+    "Playful": 0.95,
+}
+
+# Words that commit a description to a pace. Used by the self-check to prove a
+# factor never contradicts its own wording.
+TONE_SLOW_MARKERS = ("slow", "slowly", "unhurried", "deliberate")
+TONE_FAST_MARKERS = ("quick", "quickly", "fast", "lively")
+
 # Long enough for a genuinely multi-dimensional direction, short enough that
 # the description does not start competing with the text for attention.
 TONE_DESCRIPTION_MAX_WORDS = 18
@@ -106,6 +153,11 @@ TONE_CONTRADICTIONS = (
 def tone_description(name: str) -> str:
     """Return the description for `name`, or "" when unknown."""
     return TONE_DESCRIPTION_PRESETS.get(name, "")
+
+
+def tone_speed(name: str) -> float:
+    """Return the speaking-rate factor for `name`, or the default when unknown."""
+    return TONE_PRESET_SPEEDS.get(name, DEFAULT_TONE_SPEED)
 
 
 def dimensions_covered(description: str) -> List[str]:
@@ -168,6 +220,31 @@ def _self_check() -> None:
                 f"presets {seen[description]!r} and {name!r} share a description"
             )
         seen[description] = name
+
+    for name in TONE_DESCRIPTION_PRESETS:
+        if name not in TONE_PRESET_SPEEDS:
+            raise ValueError(f"preset {name!r} has no speed factor")
+    for name in TONE_PRESET_SPEEDS:
+        if name not in TONE_DESCRIPTION_PRESETS:
+            raise ValueError(f"speed factor {name!r} names no preset")
+
+    for name, speed in TONE_PRESET_SPEEDS.items():
+        if not TONE_SPEED_MIN <= speed <= TONE_SPEED_MAX:
+            raise ValueError(
+                f"preset {name!r} speed {speed} is outside the "
+                f"{TONE_SPEED_MIN}-{TONE_SPEED_MAX} range"
+            )
+        lowered = TONE_DESCRIPTION_PRESETS[name].lower()
+        says_slow = [w for w in TONE_SLOW_MARKERS if w in lowered]
+        says_fast = [w for w in TONE_FAST_MARKERS if w in lowered]
+        if says_slow and speed <= 1.0:
+            raise ValueError(
+                f"preset {name!r} says {says_slow} but its speed {speed} is not slower"
+            )
+        if says_fast and not says_slow and speed >= 1.0:
+            raise ValueError(
+                f"preset {name!r} says {says_fast} but its speed {speed} is not faster"
+            )
 
 
 _self_check()

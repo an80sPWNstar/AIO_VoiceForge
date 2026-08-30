@@ -1,6 +1,7 @@
 import html
 import json
 import os
+import re
 import sys
 import queue
 import threading
@@ -30,6 +31,10 @@ current_dir = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(current_dir)
 sys.path.append(os.path.join(current_dir, "indextts"))
 
+# This process never imports the engine — it only needs to know where the engine
+# lives and which interpreter runs it, so that it can spawn the worker.
+import engine_paths
+
 import argparse
 parser = argparse.ArgumentParser(
     description="IndexTTS WebUI",
@@ -38,7 +43,8 @@ parser = argparse.ArgumentParser(
 parser.add_argument("--verbose", action="store_true", default=False, help="Enable verbose mode")
 parser.add_argument("--port", type=int, default=7860, help="Port to run the web UI on")
 parser.add_argument("--host", type=str, default="0.0.0.0", help="Host to run the web UI on")
-parser.add_argument("--model_dir", type=str, default="./checkpoints", help="Model checkpoints directory")
+parser.add_argument("--model_dir", type=str, default=engine_paths.ENGINE_CHECKPOINTS,
+                    help="IndexTTS-2.5 checkpoints directory")
 parser.add_argument("--fp16", action="store_true", default=False, help="Use FP16 for inference if available")
 parser.add_argument("--deepspeed", action="store_true", default=False, help="Use DeepSpeed to accelerate if available")
 parser.add_argument("--cuda_kernel", action="store_true", default=False, help="Use CUDA kernel for inference if available")
@@ -50,8 +56,9 @@ if not os.path.exists(cmd_args.model_dir):
     print(f"Model directory {cmd_args.model_dir} does not exist. Please download the model first.")
     sys.exit(1)
 
+# bpe.model is deliberately absent from this list: IndexTTS-2.5 tokenizes from a
+# tiktoken vocabulary and never ships one, even though its config still names it.
 for file in [
-    "bpe.model",
     "gpt.pth",
     "config.yaml",
     "s2mel.pth",
@@ -62,10 +69,19 @@ for file in [
         print(f"Required file {file_path} does not exist. Please download it.")
         sys.exit(1)
 
+# Generation happens in a subprocess under the engine's own interpreter, so a
+# missing engine has to be caught here rather than at the first generate click.
+_missing_engine = engine_paths.missing_engine_parts()
+if _missing_engine:
+    print("IndexTTS-2.5 engine is not installed. Missing:")
+    for path in _missing_engine:
+        print(f"  {path}")
+    sys.exit(1)
+
 import gradio as gr
 from omegaconf import OmegaConf
 from indextts.utils.front import TextNormalizer, TextTokenizer
-from indextts.utils.subtitle_utils import (
+from subtitle_utils import (
     SUPPORTED_SUBTITLE_EXTENSIONS,
     assemble_subtitle_audio,
     build_subtitle_render_units,
@@ -80,7 +96,7 @@ from indextts.utils.subtitle_utils import (
     subtitle_cues_to_text,
     write_pcm16_wav,
 )
-from indextts.utils.task_output_utils import (
+from task_output_utils import (
     build_segment_output_path,
     create_task_output_layout,
     normalize_file_extension,
@@ -185,7 +201,37 @@ MODEL_VERSION = str(getattr(PREVIEW_CFG, "version", "1.0"))
 PREVIEW_BPE_PATH = os.path.join(cmd_args.model_dir, PREVIEW_CFG.dataset["bpe_model"])
 PREVIEW_TEXT_NORMALIZER = TextNormalizer()
 PREVIEW_TEXT_NORMALIZER.load()
-PREVIEW_TEXT_TOKENIZER = TextTokenizer(PREVIEW_BPE_PATH, PREVIEW_TEXT_NORMALIZER)
+
+# The segment preview is a UI convenience, and it needs a sentencepiece model
+# that IndexTTS-2.5 does not ship: its config still names bpe.model, but the
+# release tokenizes from a tiktoken vocabulary instead, so that file is absent.
+# Without a tokenizer the preview falls back to a rough split; the engine itself
+# always does its own segmentation, so an estimate here never changes output.
+PREVIEW_TEXT_TOKENIZER = (
+    TextTokenizer(PREVIEW_BPE_PATH, PREVIEW_TEXT_NORMALIZER)
+    if os.path.exists(PREVIEW_BPE_PATH)
+    else None
+)
+if PREVIEW_TEXT_TOKENIZER is None:
+    print(
+        f"Segment preview: no tokenizer at {PREVIEW_BPE_PATH}; "
+        "showing an estimated split instead."
+    )
+
+# Average characters per token, used only when estimating the preview split.
+PREVIEW_CHARS_PER_TOKEN = 4
+
+# The languages IndexTTS-2.5 is trained for. The engine lowercases these and
+# falls back to a generic token for anything it does not know, so a wrong value
+# degrades pronunciation rather than failing.
+ENGINE_LANGUAGES = [
+    ("English", "EN"),
+    ("Chinese", "ZH"),
+    ("Japanese", "JA"),
+    ("Spanish", "ES"),
+    ("Arabic", "AR"),
+]
+DEFAULT_ENGINE_LANGUAGE = "EN"
 
 
 def _create_inprocess_tts():
@@ -1212,6 +1258,8 @@ def _prepare_generation_request(
     emo_text,
     emo_random,
     max_text_tokens_per_segment,
+    speed_factor,
+    language,
     save_as_mp3,
     diffusion_steps,
     inference_cfg_rate,
@@ -1318,18 +1366,18 @@ def _prepare_generation_request(
         "verbose": bool(cmd_args.verbose),
         "max_text_tokens_per_segment": max_tokens,
         "interval_silence": int(interval_silence),
-        "diffusion_steps": int(diffusion_steps),
-        "inference_cfg_rate": float(inference_cfg_rate),
-        "max_speaker_audio_length": float(max_speaker_audio_length),
-        "max_emotion_audio_length": float(max_emotion_audio_length),
-        "section_batch_size": int(autoregressive_batch_size),
-        "max_emotion_sum": float(max_emotion_sum),
-        "latent_multiplier": float(latent_multiplier),
-        "max_consecutive_silence": int(max_consecutive_silence),
-        "semantic_layer": int(semantic_layer),
-        "cfm_cache_length": int(cfm_cache_length),
-        "reset_beam_cache_per_segment": bool(prevent_vram_accumulation),
+        # Speaking rate: above 1.0 is slower, below is faster. New in 2.5, and
+        # the reason the Speed control exists.
+        "duration_factor": float(speed_factor),
+        "lang": str(language or DEFAULT_ENGINE_LANGUAGE),
     }
+    # Everything the 2.0 fork accepted and 2.5 does not — diffusion_steps,
+    # inference_cfg_rate, the reference-length caps, section_batch_size,
+    # latent_multiplier, max_consecutive_silence, semantic_layer,
+    # cfm_cache_length and reset_beam_cache_per_segment — is deliberately not
+    # sent: passing an unknown keyword reaches the GPT sampler as a generation
+    # argument and fails there instead of here. max_emotion_sum is still read,
+    # but by normalize_emo_vector above rather than by the engine.
 
     subtitle_cues = parse_subtitle_file(subtitle_file) if subtitle_mode else []
     subtitle_render_units = build_subtitle_render_units(subtitle_cues) if subtitle_mode else []
@@ -1565,8 +1613,11 @@ def _run_generation_subprocess(request):
         with open(request_path, "w", encoding="utf-8") as handle:
             json.dump(request, handle, indent=2, ensure_ascii=False)
 
+        # The worker runs under the ENGINE's interpreter, not this one: the two
+        # need different numpy majors, which is the whole reason generation is a
+        # subprocess rather than a function call.
         cmd = [
-            sys.executable,
+            engine_paths.ENGINE_PYTHON,
             os.path.join(current_dir, "webui_subprocess_worker.py"),
             "--request-file",
             request_path,
@@ -1577,7 +1628,13 @@ def _run_generation_subprocess(request):
         ]
         popen_kwargs = {
             "cwd": current_dir,
-            "env": {**os.environ, "PYTHONUNBUFFERED": "1"},
+            "env": {
+                **os.environ,
+                "PYTHONUNBUFFERED": "1",
+                # Pass the resolved checkout through, so an override set here is
+                # the one the worker uses rather than its own default.
+                engine_paths.ENGINE_ROOT_ENV: engine_paths.ENGINE_ROOT,
+            },
         }
         if os.name == "nt":
             popen_kwargs["creationflags"] = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
@@ -1707,8 +1764,30 @@ def get_text_processing_sections(text, max_text_tokens_per_segment):
         return []
 
     max_tokens = resolve_max_text_tokens(max_text_tokens_per_segment)
+    if PREVIEW_TEXT_TOKENIZER is None:
+        return estimate_text_processing_sections(text, max_tokens)
     text_tokens_list = PREVIEW_TEXT_TOKENIZER.tokenize(text)
     return PREVIEW_TEXT_TOKENIZER.split_segments(text_tokens_list, max_text_tokens_per_segment=max_tokens)
+
+
+def estimate_text_processing_sections(text, max_tokens):
+    """Split text on sentence ends when no tokenizer is available.
+
+    Roughly four characters per token, which is close enough for a preview whose
+    only job is to show the user how many chunks their text will become.
+    """
+    budget = max(1, int(max_tokens * PREVIEW_CHARS_PER_TOKEN))
+    sentences = re.findall(r"[^.!?。！？\n]+[.!?。！？]*\s*|\n+", text)
+    sections, current = [], ""
+    for sentence in sentences:
+        if current and len(current) + len(sentence) > budget:
+            sections.append([current.strip()])
+            current = sentence
+        else:
+            current += sentence
+    if current.strip():
+        sections.append([current.strip()])
+    return sections
 
 
 def build_section_count_message(text, max_text_tokens_per_segment, subtitle_mode=False, subtitle_file=None):
@@ -1762,8 +1841,13 @@ def get_preview_rows(text, max_text_tokens_per_segment, subtitle_mode=False, sub
     data = []
     for i, segment_tokens in enumerate(segments):
         segment_str = ''.join(segment_tokens)
-        tokens_count = len(segment_tokens)
-        data.append([i, "Text Segment", segment_str, f"{tokens_count} tokens"])
+        # Without a tokenizer the sections are estimated, so report the measure
+        # that was actually used rather than calling characters "tokens".
+        if PREVIEW_TEXT_TOKENIZER is None:
+            details = f"~{len(segment_str)} characters"
+        else:
+            details = f"{len(segment_tokens)} tokens"
+        data.append([i, "Text Segment", segment_str, details])
     return data
 
 
@@ -1772,6 +1856,8 @@ def gen_single(emo_control_method,prompt, text, subtitle_mode, subtitle_file, sa
                vec1, vec2, vec3, vec4, vec5, vec6, vec7, vec8,
                emo_text,emo_random,
                max_text_tokens_per_segment,
+               speed_factor,
+               language,
                save_as_mp3,
                # Expert params (in order from expert_params list)
                diffusion_steps,
@@ -1831,6 +1917,8 @@ def gen_single(emo_control_method,prompt, text, subtitle_mode, subtitle_file, sa
         emo_text,
         emo_random,
         max_text_tokens_per_segment,
+        speed_factor,
+        language,
         save_as_mp3,
         diffusion_steps,
         inference_cfg_rate,
@@ -2575,12 +2663,13 @@ with gr.Blocks(title=APP_TITLE) as demo:
 
                 section_count_label = gr.Markdown("**Current Sections:** 0")
                 autoregressive_batch_size = gr.Slider(
+                    interactive=False,
                     label="Section Batch Size",
                     value=1,
                     minimum=1,
                     maximum=8,
                     step=1,
-                    info="Real micro-batch size for processing multiple text/subtitle sections together with shared reference conditioning. Higher values increase throughput with a smaller VRAM increase than parallel runs, but still use more memory. Start with 2."
+                    info="Not used by IndexTTS-2.5. Real micro-batch size for processing multiple text/subtitle sections together with shared reference conditioning. Higher values increase throughput with a smaller VRAM increase than parallel runs, but still use more memory. Start with 2."
                 )
 
                 # Output filename and save used audio options
@@ -2718,6 +2807,25 @@ with gr.Blocks(title=APP_TITLE) as demo:
                         value=tone_presets.TONE_PRESET_NONE,
                         info="Describes HOW to say it (low and deep, whispered...). Never spoken aloud.",
                     )
+                    # Not just "Speed": the voice-shaping panel already has a
+                    # slider by that name, which retimes the finished clip. This
+                    # one changes how the engine speaks in the first place.
+                    speed_factor = gr.Slider(
+                        label="Speaking speed",
+                        value=tone_presets.DEFAULT_TONE_SPEED,
+                        minimum=tone_presets.TONE_SPEED_MIN,
+                        maximum=tone_presets.TONE_SPEED_MAX,
+                        step=0.05,
+                        info="Drag left to speak faster or right to speak slower. "
+                             "Choosing a tone preset sets this to suit it, and you "
+                             "can change it afterwards.",
+                    )
+                    language_choice = gr.Dropdown(
+                        label="Language",
+                        choices=ENGINE_LANGUAGES,
+                        value=DEFAULT_ENGINE_LANGUAGE,
+                        info="The language the text is written in.",
+                    )
                     gr.Markdown(
                         "**For emphasis, CAPITALISE the word** you want stressed "
                         "in the text itself - `I told you NOT to do that`, or part "
@@ -2777,41 +2885,45 @@ with gr.Blocks(title=APP_TITLE) as demo:
             # Row 1: Diffusion Steps and CFG Rate
             with gr.Row():
                 diffusion_steps = gr.Slider(
+                    interactive=False,
                     label="Diffusion Steps",
                     value=25,
                     minimum=10,
                     maximum=100,
                     step=1,
-                    info="Number of denoising steps in the diffusion model. Higher = better quality but slower. Default: 25"
+                    info="Not used by IndexTTS-2.5. Number of denoising steps in the diffusion model. Higher = better quality but slower. Default: 25"
                 )
                 inference_cfg_rate = gr.Slider(
+                    interactive=False,
                     label="CFG Rate (Classifier-Free Guidance)",
                     value=0.7,
                     minimum=0.0,
                     maximum=2.0,
                     step=0.05,
-                    info="Controls how strongly the model follows the voice, emotion, and style characteristics from reference audio. Higher values = stricter adherence to reference, lower = more variation. 0.0 = no guidance (random), 0.7 = balanced (default), >1.0 = very strong adherence to reference characteristics."
+                    info="Not used by IndexTTS-2.5. Controls how strongly the model follows the voice, emotion, and style characteristics from reference audio. Higher values = stricter adherence to reference, lower = more variation. 0.0 = no guidance (random), 0.7 = balanced (default), >1.0 = very strong adherence to reference characteristics."
                 )
 
             # Row 2: Reference Audio Processing Limits
             with gr.Row():
                 with gr.Column():
                     max_speaker_audio_length = gr.Slider(
+                        interactive=False,
                         label="Max Speaker Reference Length (seconds)",
                         value=30,
                         minimum=3,
                         maximum=90,
                         step=1,
-                        info="How much of the speaker reference audio to use. Model works best with 5-15 seconds. Maximum set to 90 seconds for safety. Default: 30s"
+                        info="Not used by IndexTTS-2.5. How much of the speaker reference audio to use. Model works best with 5-15 seconds. Maximum set to 90 seconds for safety. Default: 30s"
                     )
                 with gr.Column():
                     max_emotion_audio_length = gr.Slider(
+                        interactive=False,
                         label="Max Emotion Reference Length (seconds)",
                         value=30,
                         minimum=3,
                         maximum=90,
                         step=1,
-                        info="How much of the emotion reference audio to use. Model works best with 5-15 seconds. Maximum set to 90 seconds for safety. Default: 30s"
+                        info="Not used by IndexTTS-2.5. How much of the emotion reference audio to use. Model works best with 5-15 seconds. Maximum set to 90 seconds for safety. Default: 30s"
                     )
 
             # Row 3: Enable Sampling and Temperature
@@ -2858,14 +2970,16 @@ with gr.Blocks(title=APP_TITLE) as demo:
                     info="Save audio as MP3 format instead of WAV" if MP3_AVAILABLE else "Requires pydub: pip install pydub"
                 )
                 low_memory_mode = gr.Checkbox(
+                    interactive=False,
                     label="Low Memory Mode",
                     value=False,
-                    info="Enable low memory mode for systems with limited GPU memory (inference will be slower)"
+                    info="Not used by IndexTTS-2.5. Enable low memory mode for systems with limited GPU memory (inference will be slower)"
                 )
                 prevent_vram_accumulation = gr.Checkbox(
+                    interactive=False,
                     label="Prevent VRAM Accumulation",
                     value=False,
-                    info="Reset beam search cache after each segment. Helps avoid VRAM growth at higher beams (e.g., 8). Slight performance impact."
+                    info="Not used by IndexTTS-2.5. Reset beam search cache after each segment. Helps avoid VRAM growth at higher beams (e.g., 8). Slight performance impact."
                 )
 
         with gr.Accordion("Preview Sentence Segmentation Results", open=True) as segments_settings:
@@ -2906,12 +3020,13 @@ with gr.Blocks(title=APP_TITLE) as demo:
                 )
             with gr.Column():
                 latent_multiplier = gr.Slider(
+                    interactive=False,
                     label="Latent Length Multiplier",
                     value=1.72,
                     minimum=1.0,
                     maximum=3.0,
                     step=0.01,
-                    info="Controls speech pacing speed. Higher (2.0-3.0) = slower, more stretched speech. Lower (1.0-1.5) = faster, more compressed speech. Default 1.72 is natural pacing."
+                    info="Not used by IndexTTS-2.5. Controls speech pacing speed. Higher (2.0-3.0) = slower, more stretched speech. Lower (1.0-1.5) = faster, more compressed speech. Default 1.72 is natural pacing."
                 )
 
         with gr.Row():
@@ -2959,12 +3074,13 @@ with gr.Blocks(title=APP_TITLE) as demo:
         with gr.Row():
             with gr.Column():
                 max_consecutive_silence = gr.Slider(
+                    interactive=False,
                     label="Max Consecutive Silent Tokens (0=disabled)",
                     value=0,
                     minimum=0,
                     maximum=100,
                     step=5,
-                    info="Removes long pauses in speech. Higher (30-50) = allows longer natural pauses. Lower (5-20) = tighter, more continuous speech. 0 = no pause removal. Try 30 if output has awkward long silences."
+                    info="Not used by IndexTTS-2.5. Removes long pauses in speech. Higher (30-50) = allows longer natural pauses. Lower (5-20) = tighter, more continuous speech. 0 = no pause removal. Try 30 if output has awkward long silences."
                 )
             with gr.Column():
                 interval_silence = gr.Slider(
@@ -3012,21 +3128,23 @@ with gr.Blocks(title=APP_TITLE) as demo:
         with gr.Row():
             with gr.Column():
                 semantic_layer = gr.Slider(
+                    interactive=False,
                     label="Semantic Feature Extraction Layer",
                     value=17,
                     minimum=1,
                     maximum=24,
                     step=1,
-                    info="Which layer of the semantic model to use. Higher layers (15-20) = more expressive, emotion-aware speech. Lower layers (5-12) = clearer pronunciation. Default 17 balances both."
+                    info="Not used by IndexTTS-2.5. Which layer of the semantic model to use. Higher layers (15-20) = more expressive, emotion-aware speech. Lower layers (5-12) = clearer pronunciation. Default 17 balances both."
                 )
             with gr.Column():
                 cfm_cache_length = gr.Slider(
+                    interactive=False,
                     label="CFM Max Cache Sequence Length",
                     value=8192,
                     minimum=1024,
                     maximum=16384,
                     step=512,
-                    info="Memory allocation for processing speech. Higher (12000-16000) = handles longer segments better but uses more VRAM. Lower (4000-8000) = less memory usage. Default 8192 works for most."
+                    info="Not used by IndexTTS-2.5. Memory allocation for processing speech. Higher (12000-16000) = handles longer segments better but uses more VRAM. Lower (4000-8000) = less memory usage. Default 8192 works for most."
                 )
 
         gr.Markdown("### 🎛️ Custom Emotion Bias Weights")
@@ -3899,6 +4017,8 @@ with gr.Blocks(title=APP_TITLE) as demo:
                               vec1, vec2, vec3, vec4, vec5, vec6, vec7, vec8,
                                emo_text,emo_random,
                                max_text_tokens_per_segment,
+                              speed_factor,
+                              language_choice,
                               save_as_mp3,
                               *expert_params,
                               *advanced_params,
@@ -4131,22 +4251,26 @@ with gr.Blocks(title=APP_TITLE) as demo:
         radio as well or the description is silently ignored.
         """
         description = tone_presets.tone_description(preset_name)
+        # The preset seeds the Speed control; the control stays the value the
+        # engine is given, so a later drag always wins over the preset.
+        speed = gr.update(value=tone_presets.tone_speed(preset_name))
         if not description:
             # "None" clears the box but leaves the radio and the visible groups
             # alone, so picking it does not yank the user out of the mode they
             # were already working in.
-            return (gr.update(value=""), gr.update()) + tuple(
+            return (gr.update(value=""), gr.update(), speed) + tuple(
                 gr.update() for _ in range(EMOTION_GROUP_COUNT)
             )
         return (
             gr.update(value=description),
             gr.update(value=EMO_CHOICES_ALL[EMOTION_TEXT_MODE_INDEX]),
+            speed,
         ) + on_method_change(EMOTION_TEXT_MODE_INDEX)
 
     tone_preset.change(
         apply_tone_preset_ui,
         inputs=[tone_preset],
-        outputs=[emo_text, emo_control_method] + _EMOTION_GROUPS,
+        outputs=[emo_text, emo_control_method, speed_factor] + _EMOTION_GROUPS,
         queue=False,
         show_progress="hidden",
     )
