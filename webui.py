@@ -88,6 +88,8 @@ from indextts.utils.task_output_utils import (
 )
 from tools.i18n.i18n import I18nAuto
 import webui_media_fetch as media_fetch
+import webui_audio_cleanup as audio_cleanup
+import audio_cleanup_shared as cleanup_shared
 import webui_voice_shaping as voice_shaping
 import webui_tone_presets as tone_presets
 from webui_generation_runner import create_tts as create_generation_tts, run_generation_request
@@ -2080,6 +2082,51 @@ def media_fetch_format_choices():
     return [(fmt.label, fmt.key) for fmt in media_fetch.usable_formats()]
 
 
+def media_fetch_default_quality():
+    """Return the preset the tab starts on.
+
+    Falls back to the Manual entry rather than raising, so a bad
+    DEFAULT_QUALITY_KEY degrades to the plain module defaults instead of
+    breaking the whole tab at build time.
+    """
+    preset = media_fetch.quality_preset_by_key(media_fetch.DEFAULT_QUALITY_KEY)
+    if preset is not None:
+        return preset
+    return media_fetch.quality_preset_by_key(media_fetch.QUALITY_MANUAL_KEY)
+
+
+def media_fetch_quality_choices():
+    """Radio choices for the audio quality presets."""
+    return [(preset.label, preset.key) for preset in media_fetch.QUALITY_PRESETS]
+
+
+def media_fetch_quality_description(quality_key):
+    """Blurb shown under the quality radio."""
+    preset = media_fetch.quality_preset_by_key(quality_key)
+    return preset.description if preset else ""
+
+
+def on_media_fetch_quality_change(quality_key):
+    """Fill the manual format/rate/channel controls from the chosen preset.
+
+    One-way, like the cleanup presets: the manual controls stay the single
+    source of truth for what actually runs, and the preset only seeds them.
+    Picking Manual leaves them untouched.
+    """
+    preset = media_fetch.quality_preset_by_key(quality_key)
+    if preset is None:
+        return gr.update(), gr.update(), gr.update(), gr.update()
+    description = gr.update(value=preset.description)
+    if preset.key == media_fetch.QUALITY_MANUAL_KEY:
+        return gr.update(), gr.update(), gr.update(), description
+    return (
+        gr.update(value=preset.format_key),
+        gr.update(value=preset.sample_rate),
+        gr.update(value=preset.channel_mode),
+        description,
+    )
+
+
 def media_fetch_environment_note():
     """One-line readiness note shown under the tab heading."""
     ytdlp = media_fetch.ytdlp_version()
@@ -2222,6 +2269,172 @@ def media_fetch_open_folder():
     else:
         subprocess.Popen(["xdg-open", target])
     return gr.update(value=f"Opened {target}", visible=True)
+
+
+# --------------------------------------------------------------------------
+# Audio cleanup -- second half of the Download & Extract tab
+# --------------------------------------------------------------------------
+
+CLEANUP_PROGRESS_IDLE = render_progress_bar(0.0, "Idle")
+CLEANUP_LOG_LINES = MEDIA_FETCH_LOG_LINES
+CLEANUP_THREAD_JOIN_SECONDS = MEDIA_FETCH_THREAD_JOIN_SECONDS
+CLEANUP_NO_RESULT = ""
+
+# Speaker mode radio labels. The values are the shared constants; only the
+# wording lives here.
+CLEANUP_SPEAKER_MODE_CHOICES = [
+    ("Keep whoever talks the most", cleanup_shared.SPEAKER_MODE_DOMINANT),
+    ("Keep whoever matches a voice sample", cleanup_shared.SPEAKER_MODE_SAMPLE),
+]
+
+CLEANUP_DEVICE_CHOICES = [
+    ("GPU", cleanup_shared.DEFAULT_DEVICE),
+    ("CPU (slow)", cleanup_shared.DEVICE_CPU),
+]
+
+
+def cleanup_stage_choices():
+    """Checkbox choices for the individual cleanup stages, in pipeline order."""
+    return [(cleanup_shared.STAGE_LABELS[stage], stage)
+            for stage in cleanup_shared.STAGE_ORDER]
+
+
+def cleanup_preset_choices():
+    """Radio choices for the cleanup presets."""
+    return [(preset.label, preset.key) for preset in cleanup_shared.CLEANUP_PRESETS]
+
+
+def cleanup_default_stages():
+    """Stages ticked when the tab first renders."""
+    preset = cleanup_shared.preset_by_key(cleanup_shared.DEFAULT_PRESET_KEY)
+    return list(preset.stages) if preset else []
+
+
+def cleanup_preset_description(preset_key):
+    """Blurb shown under the preset radio."""
+    preset = cleanup_shared.preset_by_key(preset_key)
+    return preset.description if preset else ""
+
+
+def on_cleanup_preset_change(preset_key):
+    """Fill the advanced stage checkboxes from the chosen preset.
+
+    One-way on purpose: the checkboxes are the single source of truth for what
+    runs, and the preset only seeds them. Wiring the reverse direction as well
+    would make the two components update each other in a loop.
+    """
+    preset = cleanup_shared.preset_by_key(preset_key)
+    if preset is None:
+        return gr.update(), gr.update()
+    description = gr.update(value=preset.description)
+    if preset.key == cleanup_shared.PRESET_CUSTOM_KEY:
+        return gr.update(), description
+    return gr.update(value=list(preset.stages)), description
+
+
+def on_cleanup_speaker_mode_change(mode):
+    """Show the voice-sample box only in the mode that reads it."""
+    return gr.update(visible=(mode == cleanup_shared.SPEAKER_MODE_SAMPLE))
+
+
+def cleanup_run_ui(
+    fetched_path,
+    uploaded_path,
+    stages,
+    vocal_model,
+    dereverb_model,
+    denoise_model,
+    speaker_mode,
+    speaker_sample,
+    speaker_threshold,
+    sample_rate,
+    channel_mode,
+    device,
+    keep_intermediates,
+    progress=gr.Progress(),
+):
+    """Clean Up Audio button: stream progress, then report the cleaned file.
+
+    Same shape as media_fetch_run_ui -- a generator draining a queue that a
+    worker thread fills, so the log and bar update while the subprocess runs.
+    """
+    source = uploaded_path or fetched_path
+    events = queue.Queue()
+    outcome = {}
+    finished = object()
+
+    def worker():
+        try:
+            outcome["result"] = audio_cleanup.run_cleanup(
+                input_path=source,
+                output_root=MEDIA_FETCH_OUTPUT_ROOT,
+                stages=list(stages or []),
+                vocal_model=vocal_model,
+                dereverb_model=dereverb_model,
+                denoise_model=denoise_model,
+                speaker_mode=speaker_mode,
+                speaker_sample=speaker_sample,
+                speaker_threshold=float(speaker_threshold),
+                sample_rate=int(sample_rate),
+                channel_mode=channel_mode,
+                device=device,
+                keep_intermediates=bool(keep_intermediates),
+                progress_callback=events.put,
+            )
+        except audio_cleanup.CleanupError as exc:
+            outcome["error"] = str(exc)
+        except Exception as exc:  # noqa: BLE001 - surfaced, never swallowed
+            outcome["error"] = f"Unexpected {type(exc).__name__}: {exc}"
+        finally:
+            events.put(finished)
+
+    thread = threading.Thread(target=worker, daemon=True, name="audio-cleanup")
+    thread.start()
+
+    lines = []
+    last_fraction = 0.0
+    while True:
+        event = events.get()
+        if event is finished:
+            break
+        lines.append(event.message)
+        if event.fraction is not None:
+            progress(event.fraction, desc=event.message)
+            last_fraction = event.fraction
+        yield (
+            gr.update(value=render_progress_bar(last_fraction, event.message)),
+            gr.update(),
+            gr.update(),
+            gr.update(),
+            gr.update(value="\n".join(lines[-CLEANUP_LOG_LINES:])),
+        )
+
+    thread.join(timeout=CLEANUP_THREAD_JOIN_SECONDS)
+
+    if "error" in outcome:
+        lines.append(outcome["error"])
+        yield (
+            gr.update(value=render_progress_bar(
+                last_fraction, outcome["error"], failed=True)),
+            gr.update(value=None),
+            gr.update(value=CLEANUP_NO_RESULT),
+            gr.update(value=f"WARNING: {outcome['error']}"),
+            gr.update(value="\n".join(lines[-CLEANUP_LOG_LINES:])),
+        )
+        return
+
+    result = outcome["result"]
+    audio_path = result["audio_path"]
+    notes = "\n".join(result.get("notes", [])) or "Cleaned."
+    status = f"Saved {os.path.basename(audio_path)}"
+    progress(1.0, desc=status)
+    yield (
+        gr.update(value=render_progress_bar(1.0, status, done=True)),
+        gr.update(value=audio_path),
+        gr.update(value=audio_path),
+        gr.update(value=notes),
+        gr.update(value="\n".join(lines[-CLEANUP_LOG_LINES:])),
+    )
 
 
 theme = gr.themes.Soft()
@@ -3246,22 +3459,15 @@ with gr.Blocks(title=APP_TITLE) as demo:
             with gr.Column(scale=1, min_width=320):
                 with gr.Group():
                     gr.Markdown("#### Audio output")
-                    mf_format = gr.Dropdown(
-                        label="Format",
-                        choices=media_fetch_format_choices(),
-                        value=media_fetch.DEFAULT_FORMAT_KEY,
+                    mf_quality = gr.Radio(
+                        label="Audio quality",
+                        choices=media_fetch_quality_choices(),
+                        value=media_fetch.DEFAULT_QUALITY_KEY,
                     )
-                    with gr.Row():
-                        mf_sample_rate = gr.Dropdown(
-                            label="Sample rate (Hz)",
-                            choices=media_fetch.SAMPLE_RATES,
-                            value=media_fetch.DEFAULT_SAMPLE_RATE,
-                        )
-                        mf_channels = gr.Radio(
-                            label="Channels",
-                            choices=media_fetch.CHANNEL_MODES,
-                            value=media_fetch.DEFAULT_CHANNEL_MODE,
-                        )
+                    mf_quality_note = gr.Markdown(
+                        media_fetch_quality_description(
+                            media_fetch.DEFAULT_QUALITY_KEY)
+                    )
                     with gr.Row():
                         mf_start_time = gr.Textbox(
                             label="Trim start",
@@ -3272,6 +3478,29 @@ with gr.Blocks(title=APP_TITLE) as demo:
                             label="Trim end",
                             placeholder="0:45 or 45",
                             lines=1,
+                        )
+
+                with gr.Accordion("Manual audio settings", open=False):
+                    gr.Markdown(media_fetch.QUALITY_GUIDANCE)
+                    # Seeded from the default preset, not from the module
+                    # defaults: .change only fires on user interaction, so a
+                    # control built with a different value would contradict the
+                    # radio above it until the user touched the radio.
+                    mf_format = gr.Dropdown(
+                        label="Format",
+                        choices=media_fetch_format_choices(),
+                        value=media_fetch_default_quality().format_key,
+                    )
+                    with gr.Row():
+                        mf_sample_rate = gr.Dropdown(
+                            label="Sample rate (Hz)",
+                            choices=media_fetch.SAMPLE_RATES,
+                            value=media_fetch_default_quality().sample_rate,
+                        )
+                        mf_channels = gr.Radio(
+                            label="Channels",
+                            choices=media_fetch.CHANNEL_MODES,
+                            value=media_fetch_default_quality().channel_mode,
                         )
                     mf_normalize = gr.Checkbox(
                         label="Normalise loudness (EBU R128)",
@@ -3309,6 +3538,126 @@ with gr.Blocks(title=APP_TITLE) as demo:
                     interactive=False,
                     lines=MEDIA_FETCH_LOG_LINES,
                     max_lines=MEDIA_FETCH_LOG_LINES,
+                )
+
+
+        gr.Markdown("---")
+        gr.Markdown("### Clean up the audio")
+        gr.Markdown(
+            "Removes music, background noise and other people's voices, so what "
+            "is left is one clean speaker. Runs on the extracted file above, or "
+            "on a file you upload."
+        )
+        cl_env_note = gr.Markdown(audio_cleanup.cleanup_environment_note())
+
+        with gr.Row(equal_height=False):
+            with gr.Column(scale=1, min_width=320):
+                with gr.Group():
+                    cl_preset = gr.Radio(
+                        label="How thorough?",
+                        choices=cleanup_preset_choices(),
+                        value=cleanup_shared.DEFAULT_PRESET_KEY,
+                    )
+                    cl_preset_note = gr.Markdown(
+                        cleanup_preset_description(cleanup_shared.DEFAULT_PRESET_KEY)
+                    )
+            with gr.Column(scale=1, min_width=320):
+                with gr.Group():
+                    cl_upload = gr.Audio(
+                        label="Clean a different file instead (optional)",
+                        type="filepath",
+                        sources=["upload", "microphone"],
+                    )
+
+        with gr.Row():
+            cl_run_btn = gr.Button("Clean Up Audio", variant="primary", scale=2)
+            cl_send_btn = gr.Button(
+                "Send Cleaned to Reference Voice", variant="secondary", scale=1)
+
+        cl_progress = gr.HTML(value=CLEANUP_PROGRESS_IDLE)
+
+        with gr.Accordion("Advanced cleanup settings", open=False):
+            gr.Markdown(
+                "These checkboxes are what actually runs. The preset above just "
+                "fills them in."
+            )
+            cl_stages = gr.CheckboxGroup(
+                label="Steps",
+                choices=cleanup_stage_choices(),
+                value=cleanup_default_stages(),
+            )
+            with gr.Row():
+                cl_vocal_model = gr.Dropdown(
+                    label="Vocal isolation model",
+                    choices=cleanup_shared.VOCAL_MODELS,
+                    value=cleanup_shared.DEFAULT_VOCAL_MODEL,
+                    info="Higher SDR is cleaner but slower. First use downloads it.",
+                )
+                cl_dereverb_model = gr.Dropdown(
+                    label="De-reverb model",
+                    choices=cleanup_shared.DEREVERB_MODELS,
+                    value=cleanup_shared.DEFAULT_DEREVERB_MODEL,
+                )
+                cl_denoise_model = gr.Dropdown(
+                    label="Denoise model",
+                    choices=cleanup_shared.DENOISE_MODELS,
+                    value=cleanup_shared.DEFAULT_DENOISE_MODEL,
+                )
+            with gr.Row():
+                cl_speaker_mode = gr.Radio(
+                    label="Which speaker to keep",
+                    choices=CLEANUP_SPEAKER_MODE_CHOICES,
+                    value=cleanup_shared.DEFAULT_SPEAKER_MODE,
+                )
+                cl_speaker_threshold = gr.Slider(
+                    label="Voice match threshold",
+                    minimum=cleanup_shared.SPEAKER_THRESHOLD_MIN,
+                    maximum=cleanup_shared.SPEAKER_THRESHOLD_MAX,
+                    step=cleanup_shared.SPEAKER_THRESHOLD_STEP,
+                    value=cleanup_shared.DEFAULT_SPEAKER_THRESHOLD,
+                    info="Lower keeps more; raise it if another voice slips in.",
+                )
+            cl_speaker_sample = gr.Audio(
+                label="Voice sample of the speaker to keep",
+                type="filepath",
+                sources=["upload", "microphone"],
+                visible=False,
+            )
+            with gr.Row():
+                cl_sample_rate = gr.Dropdown(
+                    label="Output sample rate (Hz)",
+                    choices=media_fetch.SAMPLE_RATES,
+                    value=media_fetch.DEFAULT_SAMPLE_RATE,
+                )
+                cl_channels = gr.Radio(
+                    label="Output channels",
+                    choices=[media_fetch.CHANNEL_MONO, media_fetch.CHANNEL_STEREO],
+                    value=media_fetch.CHANNEL_MONO,
+                )
+                cl_device = gr.Radio(
+                    label="Run on",
+                    choices=CLEANUP_DEVICE_CHOICES,
+                    value=cleanup_shared.DEFAULT_DEVICE,
+                )
+            cl_keep_intermediates = gr.Checkbox(
+                label="Keep each step's output file (for comparing)",
+                value=False,
+            )
+
+        with gr.Row():
+            with gr.Column(scale=1):
+                cl_result_audio = gr.Audio(label="Cleaned audio", type="filepath")
+                cl_result_path = gr.Textbox(
+                    label="Saved to", value="", interactive=False, lines=1)
+            with gr.Column(scale=1):
+                cl_notes = gr.Textbox(
+                    label="What it did", value="", interactive=False, lines=4)
+                cl_log = gr.Textbox(
+                    label="Cleanup log",
+                    value="",
+                    interactive=False,
+                    lines=CLEANUP_LOG_LINES,
+                    max_lines=CLEANUP_LOG_LINES,
                 )
 
     def process_media_to_reference(media_path, time_ranges="", require_time_ranges=False):
@@ -3638,6 +3987,14 @@ with gr.Blocks(title=APP_TITLE) as demo:
             )
         return gr.update(value=extracted_audio), gr.update(value=status, visible=True)
 
+    mf_quality.change(
+        on_media_fetch_quality_change,
+        inputs=[mf_quality],
+        outputs=[mf_format, mf_sample_rate, mf_channels, mf_quality_note],
+        queue=False,
+        show_progress="hidden",
+    )
+
     mf_fetch_info_btn.click(
         media_fetch_probe_ui,
         inputs=[mf_url, mf_cookies_browser],
@@ -3687,6 +4044,72 @@ with gr.Blocks(title=APP_TITLE) as demo:
         outputs=[mf_status],
         queue=False,
         show_progress="hidden",
+    )
+
+    cl_preset.change(
+        on_cleanup_preset_change,
+        inputs=[cl_preset],
+        outputs=[cl_stages, cl_preset_note],
+        queue=False,
+        show_progress="hidden",
+    )
+
+    cl_speaker_mode.change(
+        on_cleanup_speaker_mode_change,
+        inputs=[cl_speaker_mode],
+        outputs=[cl_speaker_sample],
+        queue=False,
+        show_progress="hidden",
+    )
+
+    cl_run_btn.click(
+        cleanup_run_ui,
+        inputs=[
+            mf_result_path,
+            cl_upload,
+            cl_stages,
+            cl_vocal_model,
+            cl_dereverb_model,
+            cl_denoise_model,
+            cl_speaker_mode,
+            cl_speaker_sample,
+            cl_speaker_threshold,
+            cl_sample_rate,
+            cl_channels,
+            cl_device,
+            cl_keep_intermediates,
+        ],
+        outputs=[cl_progress, cl_result_audio, cl_result_path, cl_notes, cl_log],
+        show_progress="minimal",
+    )
+
+    def send_cleaned_to_reference(cleaned_path):
+        """Hand the cleaned file to the generation tab's reference voice box."""
+        if not cleaned_path:
+            return (
+                gr.update(),
+                gr.update(value="Clean up an audio file first.", visible=True),
+            )
+        reference_audio, status = process_media_to_reference(cleaned_path)
+        if not reference_audio:
+            return (
+                gr.update(),
+                gr.update(value=status or "Could not load the cleaned file.",
+                          visible=True),
+            )
+        return gr.update(value=reference_audio), gr.update(value=status, visible=True)
+
+    cl_send_btn.click(
+        send_cleaned_to_reference,
+        inputs=[cl_result_path],
+        outputs=[prompt_audio, reference_status],
+        queue=False,
+        show_progress="hidden",
+    ).then(
+        fn=None,
+        inputs=None,
+        outputs=None,
+        js=MEDIA_FETCH_FOCUS_GENERATION_TAB_JS,
     )
 
     # ----------------------------------------------------------------------
