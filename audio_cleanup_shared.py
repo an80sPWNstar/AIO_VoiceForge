@@ -129,11 +129,16 @@ SPEAKER_EMBEDDING_MODEL = "speechbrain/spkrec-ecapa-voxceleb"
 # Both the VAD and the speaker encoder are trained at 16 kHz.
 SPEAKER_ANALYSIS_SAMPLE_RATE = 16000
 
-# Cosine similarity above which a segment counts as the target speaker in
-# sample mode. ECAPA cosine scores for same-speaker pairs typically sit well
-# above 0.5; 0.25 is the conventional verification threshold, and the higher
-# default here trades a little recall for not letting a second voice through.
-DEFAULT_SPEAKER_THRESHOLD = 0.45
+# Cosine similarity above which a window of speech counts as the target
+# speaker. Used by BOTH modes: it is the single strictness knob.
+#
+# Calibrated, not guessed. Scoring every 1.5s window of the Elvis Duran clip
+# against the main speaker gave two clearly separated populations:
+#   other speakers  -0.04, 0.05, 0.05, 0.06, 0.07, 0.09, 0.11, 0.15, 0.23, 0.29
+#   main speaker     0.41, 0.45, 0.49, 0.51 ... 0.79, 0.81
+# 0.35 sits in the gap. Raise it if another voice still slips through; lower it
+# if the target speaker's quieter moments are being cut.
+DEFAULT_SPEAKER_THRESHOLD = 0.35
 SPEAKER_THRESHOLD_MIN = 0.10
 SPEAKER_THRESHOLD_MAX = 0.90
 SPEAKER_THRESHOLD_STEP = 0.05
@@ -143,8 +148,25 @@ SPEAKER_THRESHOLD_STEP = 0.05
 SPEAKER_CLUSTER_DISTANCE = 0.55
 
 # Speech shorter than this is too little signal for a stable embedding, so it
-# is judged by its neighbours rather than on its own.
+# is not used when working out WHO the target speaker is. It is still scored
+# and kept or dropped like any other speech.
 MIN_SPEECH_SEGMENT_SECONDS = 0.60
+
+# Sliding window used to score speech against the target speaker. 1.5s is long
+# enough for a stable ECAPA embedding -- 1s windows were measured clustering
+# into 23 spurious "voices" on a two-speaker clip -- and short enough to catch
+# a speaker change inside one long unbroken span, which is the case that made
+# the previous per-span approach leak.
+SPEAKER_WINDOW_SECONDS = 1.5
+SPEAKER_HOP_SECONDS = 0.75
+
+# Resolution of the keep/drop map built from those windows. Overlapping windows
+# vote on each slice and the mean decides it.
+SPEAKER_SLICE_SECONDS = 0.25
+
+# Kept runs shorter than this are dropped rather than spliced in: below about
+# this length a fragment is a chopped syllable, not a word.
+MIN_KEPT_RUN_SECONDS = 0.40
 
 # Padding kept either side of a retained segment so words are not clipped.
 SEGMENT_PAD_SECONDS = 0.10

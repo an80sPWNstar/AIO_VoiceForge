@@ -293,13 +293,19 @@ def _embed_reference(path: str):
     return vector / norm if norm > 0 else vector
 
 
-def _choose_dominant(vectors, spans) -> Tuple[List[int], str]:
-    """Cluster the segments and return the indices of the longest-talking one."""
+def _dominant_centroid(vectors, spans):
+    """Return (target_vector, note) for the speaker who talks the most.
+
+    Clustering runs on whole VAD spans because long spans give stable
+    embeddings, which is what choosing the right speaker needs. The result only
+    picks a target; what actually gets kept is decided per window by
+    _score_windows.
+    """
     import numpy as np
     from sklearn.cluster import AgglomerativeClustering
 
     if len(spans) == 1:
-        return [0], "Only one speech segment; kept it."
+        return vectors[0], "Only one usable speech segment; used it as the target voice."
 
     clustering = AgglomerativeClustering(
         n_clusters=None,
@@ -309,59 +315,149 @@ def _choose_dominant(vectors, spans) -> Tuple[List[int], str]:
     )
     labels = clustering.fit_predict(vectors)
 
-    talk_time: Dict[int, float] = {}
+    talk_time = {}
     for label, (start, end) in zip(labels, spans):
         talk_time[int(label)] = talk_time.get(int(label), 0.0) + (end - start)
 
     dominant = max(talk_time, key=talk_time.get)
-    kept = [i for i, label in enumerate(labels) if int(label) == dominant]
+    centroid = vectors[labels == dominant].mean(axis=0)
+    norm = np.linalg.norm(centroid)
+    if norm > 0:
+        centroid = centroid / norm
+
     total = sum(talk_time.values())
     share = talk_time[dominant] / total if total else 1.0
     note = (
-        f"Heard {len(talk_time)} distinct voice(s); kept the one talking "
+        f"Heard {len(talk_time)} distinct voice(s); targeted the one talking "
         f"{talk_time[dominant]:.0f}s ({share * 100:.0f}% of the speech)."
     )
-    return kept, note
+    return centroid, note
 
 
-def _choose_by_sample(vectors, spans, sample_path: str,
-                      threshold: float) -> Tuple[List[int], str]:
-    """Return the indices of segments matching the supplied reference voice."""
+def _score_windows(audio, spans, target, encoder):
+    """Score every window of speech against `target`.
+
+    Returns [(start, end, similarity)]. Windows overlap, so a speaker change
+    part-way through a long span is caught by whichever windows straddle it --
+    exactly the case the previous per-span version could not see.
+    """
+    import numpy as np
+    import torch
+
+    rate = shared.SPEAKER_ANALYSIS_SAMPLE_RATE
+    window = shared.SPEAKER_WINDOW_SECONDS
+    hop = shared.SPEAKER_HOP_SECONDS
+    minimum_samples = int(0.2 * rate)
+
+    scored = []
+    for start, end in spans:
+        starts = []
+        cursor = start
+        while cursor + window <= end + 0.01:
+            starts.append(cursor)
+            cursor += hop
+        if not starts:
+            starts = [start]        # span shorter than one window; score it whole
+        for begin in starts:
+            finish = min(begin + window, end)
+            chunk = audio[int(begin * rate):int(finish * rate)]
+            if len(chunk) < minimum_samples:
+                continue
+            with torch.no_grad():
+                embedding = encoder.encode_batch(chunk.unsqueeze(0))
+            vector = embedding.squeeze().detach().cpu().numpy()
+            norm = np.linalg.norm(vector)
+            if norm > 0:
+                vector = vector / norm
+            scored.append((begin, finish, float(vector @ target)))
+    return scored
+
+
+def _keep_intervals(scored, threshold, duration):
+    """Turn window scores into (kept, dropped) interval lists.
+
+    Overlapping windows vote on each slice and the mean decides it, so a
+    transition is judged from both sides rather than by whichever window
+    happened to come first.
+    """
     import numpy as np
 
-    reference = _embed_reference(sample_path)
-    scores = vectors @ reference
-    kept = [i for i, score in enumerate(scores) if score >= threshold]
-    if not kept:
-        raise CleanupError(
-            "No speech in this clip matched the voice sample "
-            f"(best similarity {float(np.max(scores)):.2f}, threshold "
-            f"{threshold:.2f}). Lower the match threshold, or check the "
-            "sample is the right person."
-        )
-    matched = sum(spans[i][1] - spans[i][0] for i in kept)
-    note = (
-        f"Matched {len(kept)} of {len(spans)} segments ({matched:.0f}s) to the "
-        f"voice sample; best similarity {float(np.max(scores)):.2f}."
-    )
-    return kept, note
+    slice_seconds = shared.SPEAKER_SLICE_SECONDS
+    count = int(np.ceil(duration / slice_seconds)) + 1
+    totals = np.zeros(count)
+    votes = np.zeros(count)
+
+    for begin, finish, similarity in scored:
+        first = int(begin / slice_seconds)
+        last = min(int(np.ceil(finish / slice_seconds)), count)
+        totals[first:last] += similarity
+        votes[first:last] += 1
+
+    speech = votes > 0
+    means = np.divide(totals, votes, out=np.zeros_like(totals), where=speech)
+    keep_flags = speech & (means >= threshold)
+    drop_flags = speech & ~keep_flags
+
+    def runs(flags):
+        found = []
+        index = 0
+        while index < count:
+            if not flags[index]:
+                index += 1
+                continue
+            start = index
+            while index < count and flags[index]:
+                index += 1
+            found.append((start * slice_seconds,
+                          min(index * slice_seconds, duration)))
+        return found
+
+    kept = [span for span in runs(keep_flags)
+            if span[1] - span[0] >= shared.MIN_KEPT_RUN_SECONDS]
+    return kept, runs(drop_flags)
 
 
-def _merge_spans(spans: Sequence[Tuple[float, float]],
-                 duration: float) -> List[Tuple[float, float]]:
-    """Pad, clamp and merge nearly-touching spans into a tidy keep-list."""
+def _pad_and_merge(kept, dropped, duration):
+    """Pad and merge kept intervals WITHOUT ever re-including dropped speech.
+
+    The previous version padded and merged in isolation, so a gap shorter than
+    the merge threshold got bridged even when the audio inside it had just been
+    classified as somebody else. Every extension here is clipped against the
+    dropped spans.
+    """
+    def clip_forward(value, limit):
+        """Largest position <= value that does not reach into dropped speech."""
+        for start, end in dropped:
+            if start >= limit and start < value:
+                return start
+        return value
+
+    def clip_backward(value, limit):
+        """Smallest position >= value that does not reach into dropped speech."""
+        for start, end in dropped:
+            if end <= limit and end > value:
+                return end
+        return value
+
     padded = []
-    for start, end in spans:
-        padded.append((
-            max(0.0, start - shared.SEGMENT_PAD_SECONDS),
-            min(duration, end + shared.SEGMENT_PAD_SECONDS),
-        ))
+    for start, end in kept:
+        new_start = clip_backward(max(0.0, start - shared.SEGMENT_PAD_SECONDS), start)
+        new_end = clip_forward(min(duration, end + shared.SEGMENT_PAD_SECONDS), end)
+        padded.append((new_start, new_end))
     padded.sort()
 
-    merged: List[Tuple[float, float]] = []
+    merged = []
     for start, end in padded:
-        if merged and start - merged[-1][1] <= shared.SEGMENT_MERGE_GAP_SECONDS:
-            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+        if not merged:
+            merged.append((start, end))
+            continue
+        previous_start, previous_end = merged[-1]
+        gap_has_speech = any(
+            drop_start < start and drop_end > previous_end
+            for drop_start, drop_end in dropped
+        )
+        if start - previous_end <= shared.SEGMENT_MERGE_GAP_SECONDS and not gap_has_speech:
+            merged[-1] = (previous_start, max(previous_end, end))
         else:
             merged.append((start, end))
     return merged
@@ -398,7 +494,15 @@ def _concatenate(source_path: str, keep: Sequence[Tuple[float, float]],
 def keep_one_speaker(source_path: str, destination_path: str, mode: str,
                      sample_path: Optional[str], threshold: float,
                      reporter: ProgressReporter) -> str:
-    """Run the speaker isolation stage. Returns a human-readable note."""
+    """Run the speaker isolation stage. Returns a human-readable note.
+
+    Two passes. The first decides WHO to keep, from whole speech spans, because
+    long spans embed stably. The second decides WHAT to keep, scoring every
+    1.5s window against that target -- which is what catches a second speaker
+    buried inside one long unbroken span.
+    """
+    from silero_vad import read_audio
+
     spans, duration = _detect_speech(source_path, reporter)
     if not spans:
         raise CleanupError(
@@ -407,27 +511,49 @@ def keep_one_speaker(source_path: str, destination_path: str, mode: str,
             "remove the voice."
         )
 
-    usable = [s for s in spans if (s[1] - s[0]) >= shared.MIN_SPEECH_SEGMENT_SECONDS]
-    if len(usable) < 2:
-        reporter.stage(shared.STAGE_SPEAKER, 1.0, "Only one voice present")
-        _copy_audio(source_path, destination_path)
-        return "Too little separate speech to tell voices apart; kept everything."
-
-    vectors = _embed_segments(source_path, usable, reporter)
     if mode == shared.SPEAKER_MODE_SAMPLE:
         if not sample_path:
             raise CleanupError(
                 "Speaker mode is 'match a sample' but no sample was supplied."
             )
-        kept_indices, note = _choose_by_sample(vectors, usable, sample_path, threshold)
+        target = _embed_reference(sample_path)
+        note = "Matched against the supplied voice sample."
     else:
-        kept_indices, note = _choose_dominant(vectors, usable)
+        usable = [s for s in spans
+                  if (s[1] - s[0]) >= shared.MIN_SPEECH_SEGMENT_SECONDS]
+        if not usable:
+            reporter.stage(shared.STAGE_SPEAKER, 1.0, "Only one voice present")
+            _copy_audio(source_path, destination_path)
+            return "Too little continuous speech to tell voices apart; kept everything."
+        vectors = _embed_segments(source_path, usable, reporter)
+        target, note = _dominant_centroid(vectors, usable)
 
-    keep = _merge_spans([usable[i] for i in kept_indices], duration)
+    reporter.stage(shared.STAGE_SPEAKER, 0.70,
+                   "Checking every second for other voices")
+    audio = read_audio(source_path, sampling_rate=shared.SPEAKER_ANALYSIS_SAMPLE_RATE)
+    scored = _score_windows(audio, spans, target, _load_encoder())
+    if not scored:
+        raise CleanupError("Speaker isolation could not score any speech.")
+
+    kept, dropped = _keep_intervals(scored, threshold, duration)
+    if not kept:
+        best = max(similarity for _, _, similarity in scored)
+        raise CleanupError(
+            "No speech matched the target voice closely enough (best match "
+            f"{best:.2f}, threshold {threshold:.2f}). Lower the voice match "
+            "threshold, or check the voice sample is the right person."
+        )
+
+    final = _pad_and_merge(kept, dropped, duration)
     reporter.stage(shared.STAGE_SPEAKER, 0.85, "Rebuilding the clip")
-    kept_seconds = _concatenate(source_path, keep, destination_path)
+    kept_seconds = _concatenate(source_path, final, destination_path)
+
+    removed = sum(end - start for start, end in dropped)
     reporter.stage(shared.STAGE_SPEAKER, 1.0, "Speaker isolated")
-    return f"{note} Result is {kept_seconds:.0f}s long."
+    return (
+        f"{note} Removed {removed:.0f}s of other voices; "
+        f"result is {kept_seconds:.0f}s long."
+    )
 
 
 def _copy_audio(source_path: str, destination_path: str) -> None:
