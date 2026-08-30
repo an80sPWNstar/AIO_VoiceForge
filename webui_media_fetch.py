@@ -80,6 +80,95 @@ AUDIO_FORMATS: Tuple[AudioFormat, ...] = (
 FORMATS_BY_KEY: Dict[str, AudioFormat] = {fmt.key: fmt for fmt in AUDIO_FORMATS}
 DEFAULT_FORMAT_KEY = "wav_pcm16"
 
+
+# --------------------------------------------------------------------------
+# Quality presets
+# --------------------------------------------------------------------------
+#
+# A format/rate/channel control is meaningless without knowing what consumes
+# the file, so the guidance lives next to the presets rather than being left
+# for the user to infer. Both numbers below were read out of this install
+# rather than recalled:
+#
+#   * indextts/infer_v2.py resamples ANY reference voice to 22050 Hz (for
+#     timbre) and 16000 Hz (for the speaker embedding) the moment it loads it.
+#     Nothing above 22.05 kHz survives, whatever is handed to it.
+#   * The separation models behind the cleanup panel run at 44100 Hz
+#     (sample_rate in their configs). Give them less and they upsample first,
+#     and separate worse.
+#
+# So the rate matters for CLEANUP, not for the engine, and never above 48 kHz,
+# because the downloaded stream is 48 kHz at best.
+
+QUALITY_GUIDANCE = """**Does the quality setting actually matter?** Mostly no - with one exception.
+
+* The TTS engine resamples every reference voice to **22.05 kHz** when it loads
+  it, so anything above that is discarded no matter what you choose here.
+* The **cleanup** steps below work at **44.1 kHz**. If you intend to clean the
+  audio, give them 44.1 kHz or better, or they upsample first and separate worse.
+  This is the one case where picking a higher setting genuinely helps.
+* Above **48 kHz is always pointless**: the downloaded stream is 48 kHz at best,
+  so a higher rate invents detail that was never there.
+* The source is already lossy (YouTube ships Opus or AAC). WAV and FLAC are both
+  lossless *copies* of it - identical audio, FLAC roughly half the size.
+  Re-encoding to MP3 adds a second round of lossy damage for nothing.
+* **24-bit and 32-bit float change nothing** in the delivered file. 16-bit is
+  already far below the noise floor of a lossy source."""
+
+
+@dataclass(frozen=True)
+class QualityPreset:
+    """One entry in the quality radio, and the manual settings it implies."""
+
+    key: str
+    label: str
+    description: str
+    format_key: str
+    sample_rate: int
+    channel_mode: str
+
+
+QUALITY_MANUAL_KEY = "manual"
+
+QUALITY_PRESETS: Tuple[QualityPreset, ...] = (
+    QualityPreset(
+        "highest", "Highest",
+        "Lossless FLAC at the source rate, in stereo. Keeps everything the "
+        "download had and is the best possible input to the cleanup steps. "
+        "About half the size of the same audio as WAV.",
+        "flac", 48000, CHANNEL_STEREO,
+    ),
+    QualityPreset(
+        "normal", "Normal",
+        "Lossless WAV at 44.1 kHz mono - the rate the cleanup models work at, "
+        "so nothing is lost where it counts. No audible difference from "
+        "Highest for this app.",
+        "wav_pcm16", 44100, CHANNEL_MONO,
+    ),
+    QualityPreset(
+        "smallest", "Smallest file",
+        "MP3 at 22.05 kHz mono. That is exactly the rate the TTS engine uses "
+        "internally, so it is near-transparent as a DIRECT reference voice - "
+        "but a poor input for cleanup, which wants 44.1 kHz.",
+        "mp3_192", 22050, CHANNEL_MONO,
+    ),
+    QualityPreset(
+        QUALITY_MANUAL_KEY, "Manual",
+        "Leaves every setting below exactly as you set it.",
+        DEFAULT_FORMAT_KEY, DEFAULT_SAMPLE_RATE, DEFAULT_CHANNEL_MODE,
+    ),
+)
+
+DEFAULT_QUALITY_KEY = "highest"
+
+
+def quality_preset_by_key(key: str) -> Optional[QualityPreset]:
+    """Return the quality preset with this key, or None when there is none."""
+    for preset in QUALITY_PRESETS:
+        if preset.key == key:
+            return preset
+    return None
+
 # Characters that are unsafe in a Windows filename.
 UNSAFE_FILENAME_CHARS = r'[<>:"/\\|?*\x00-\x1f]'
 FILENAME_MAX_LENGTH = 120
