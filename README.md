@@ -1,3 +1,52 @@
+# This is a personal fork
+
+This branch (`feature/media-fetch-tab`) adds a reference-voice pipeline and an
+engine swap on top of SECourses' app. **It is not the original**, it is not
+supported by the original author, and the upstream README below still describes
+the app as it ships from Patreon.
+
+## What this fork adds
+
+- **Download & Extract Audio tab** -- pull a clip from YouTube or anything
+  yt-dlp supports, transcode it with ffmpeg, and send it straight to the
+  reference-voice box. Quality presets seed the manual controls.
+- **Audio clean-up** -- isolate vocals, de-reverb, denoise, keep a single
+  speaker, trim silence, loudness-normalise. Order is fixed in code because the
+  chain is not commutative.
+- **IndexTTS-2.5 as the engine**, with a **persistent worker**: the model loads
+  once per session instead of once per click, so a second generation takes
+  around 4 seconds rather than 35. It gives the GPU back on an idle timer
+  (default 30 minutes, selectable), on an unload button, and at app exit.
+- **Speaking speed** slider and **tone/delivery presets** that each carry their
+  own pace, plus a language selector.
+- **Voice shaping** with formant-preserving pitch shift, so a few semitones does
+  not sound like a chipmunk.
+- **A GPU/CPU picker** that labels each device by its real name -- CUDA's device
+  order is not nvidia-smi's, so picking by number gets you the wrong card.
+- **LAN access and mobile fixes** -- `--host`/`--port` were parsed and never
+  passed to `launch()`, and the reference-voice box was microphone-only, which
+  no phone can use over plain http.
+
+## Three things that will bite you on a fresh machine
+
+1. **`requirements.txt` is not in this repo.** It lives in the installer bundle
+   one directory up, so the **gradio 6.17.3 pin does not travel with a clone**.
+   That pin sits between two real failures: 6.11 throws Svelte into an infinite
+   effect loop and hard-locks the browser tab, and 6.26 pulls in
+   huggingface-hub 1.x which breaks transformers at model load *while the UI
+   still looks perfectly healthy*. Get that file separately.
+2. **The engine is a separate checkout.** `engine_paths.py` defaults to
+   `D:\Index_TTS_v4\index-tts-2.5`; point `INDEXTTS25_ROOT` at yours. It needs
+   its own Python 3.11 venv with numpy 2.x, because this app runs on Python 3.10
+   with numpy 1.26 and the two cannot share a process. Install it with
+   `uv sync` **without** `--all-extras` -- the deepspeed extra will not build on
+   Windows.
+3. **Audio clean-up needs its own sidecar venv**, built by
+   `install_audio_cleanup.bat`, for the same reason. `checkpoints/` is
+   gitignored, so models are downloaded rather than cloned.
+
+---
+
 # IndexTTS2 SECourses Premium Voice Cloning and Generation App - 1-Click to Install on Windows, RunPod and Massed Compute - Generate Entire Audiobooks With Consistent High Quality Voice
 
 ## This app is made only for SECourses Patreon users : https://www.patreon.com/posts/139297407
