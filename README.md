@@ -1,51 +1,125 @@
-# This is a personal fork
+# AIO_VoiceForge
 
-This branch (`feature/media-fetch-tab`) adds a reference-voice pipeline and an
-engine swap on top of SECourses' app. **It is not the original**, it is not
-supported by the original author, and the upstream README below still describes
-the app as it ships from Patreon.
+Clone a voice from almost any clip, then make it say whatever you type.
 
-## What this fork adds
+Point it at a YouTube link (or hand it an audio file), let it strip out the
+music, echo and background chatter until one clean voice is left, and use that
+voice to read your text aloud. Everything happens in one window -- no juggling
+separate tools for downloading, cleaning and generating.
 
-- **Download & Extract Audio tab** -- pull a clip from YouTube or anything
-  yt-dlp supports, transcode it with ffmpeg, and send it straight to the
-  reference-voice box. Quality presets seed the manual controls.
-- **Audio clean-up** -- isolate vocals, de-reverb, denoise, keep a single
-  speaker, trim silence, loudness-normalise. Order is fixed in code because the
-  chain is not commutative.
-- **IndexTTS-2.5 as the engine**, with a **persistent worker**: the model loads
-  once per session instead of once per click, so a second generation takes
-  around 4 seconds rather than 35. It gives the GPU back on an idle timer
-  (default 30 minutes, selectable), on an unload button, and at app exit.
-- **Speaking speed** slider and **tone/delivery presets** that each carry their
-  own pace, plus a language selector.
-- **Voice shaping** with formant-preserving pitch shift, so a few semitones does
-  not sound like a chipmunk.
-- **A GPU/CPU picker** that labels each device by its real name -- CUDA's device
-  order is not nvidia-smi's, so picking by number gets you the wrong card.
-- **LAN access and mobile fixes** -- `--host`/`--port` were parsed and never
-  passed to `launch()`, and the reference-voice box was microphone-only, which
-  no phone can use over plain http.
+## What you can do with it
 
-## Three things that will bite you on a fresh machine
+1. **Grab a voice.** Paste a link in the *Download & Extract Audio* tab. It
+   downloads the audio and converts it for you.
+2. **Clean it up.** Run the clean-up chain on that clip: separate the singing or
+   music away from the speech, remove room echo, remove hiss, and keep only the
+   main speaker when other people talk over them. Tick the stages you want or
+   use a preset.
+3. **Send it over.** One button hands the cleaned clip to the generator as your
+   reference voice.
+4. **Type and generate.** Enter your text, pick how it should be delivered, and
+   press *Generate Speech*.
 
-1. **`requirements.txt` is not in this repo.** It lives in the installer bundle
-   one directory up, so the **gradio 6.17.3 pin does not travel with a clone**.
-   That pin sits between two real failures: 6.11 throws Svelte into an infinite
-   effect loop and hard-locks the browser tab, and 6.26 pulls in
-   huggingface-hub 1.x which breaks transformers at model load *while the UI
-   still looks perfectly healthy*. Get that file separately.
-2. **The engine is a separate checkout.** `engine_paths.py` defaults to
-   `D:\Index_TTS_v4\index-tts-2.5`; point `INDEXTTS25_ROOT` at yours. It needs
-   its own Python 3.11 venv with numpy 2.x, because this app runs on Python 3.10
-   with numpy 1.26 and the two cannot share a process. Install it with
-   `uv sync` **without** `--all-extras` -- the deepspeed extra will not build on
-   Windows.
-3. **Audio clean-up needs its own sidecar venv**, built by
-   `install_audio_cleanup.bat`, for the same reason. `checkpoints/` is
-   gitignored, so models are downloaded rather than cloned.
+You can also skip straight to step 4 with any audio file you already have.
+
+## Setting it up
+
+**This repository is only part of what you need.** It holds the app's code, not
+the things that make it run:
+
+- the **installer bundle** that sits one folder above it, which carries the
+  exact library versions the app needs -- getting these wrong is not obvious,
+  since the app will start and look perfectly healthy while being broken
+- the **speech engine and its voice models**, which live in their own folder
+  and are downloaded rather than stored here
+- the **clean-up tools**, installed once by running `install_audio_cleanup.bat`
+
+Get the bundle from whoever sent you this, and keep the folder layout they used.
+If the engine ends up somewhere different, set an environment variable called
+`INDEXTTS25_ROOT` pointing at it.
+
+It needs an NVIDIA graphics card. It will run without one, but slowly enough
+that it is not worth doing.
+
+## Running it
+
+Double-click **`Windows_Start_App.bat`**, wait for the black window to finish
+loading, then open **http://localhost:7860** in your browser.
+
+It also accepts connections from other devices on your network. From a phone
+or laptop, use **http://[the PC's address]:7860** -- to find that address, open
+Command Prompt on the PC, type `ipconfig`, and look for the IPv4 line, which
+usually starts with 192.168. The black window will not print this for you; it
+only ever shows `0.0.0.0`, which is not an address you can type anywhere.
+
+Close the black window to shut the app down.
+
+## Getting the best results
+
+**Give it a good reference clip.** Thirty seconds of clean, single-speaker
+speech beats five minutes of a noisy interview. The clean-up tab exists to get
+you there, so use it rather than feeding in a raw download.
+
+**Never type stage directions into your text.** If you write *"in a low, deep
+voice"* in the text box, it will read those words out loud. Delivery direction
+goes in the **Emotion Description Text** box instead -- and that box is only
+read when the emotion mode is set to the text-description option, so switch the
+selector too.
+
+**Describe delivery in several dimensions at once.** *"Speak slowly in a low,
+deep voice with heavy chest resonance"* steers it far harder than *"sad"* does.
+Single-word moods barely move it.
+
+**To stress a word, TYPE IT IN CAPITALS.** No setting fixes emphasis or
+question-mark intonation; capitals do.
+
+**Use the tone presets as starting points.** Each one sets a delivery style and
+a speaking pace together. You can adjust the *Speaking speed* slider afterwards
+-- drag left to speak faster, right to slow down. Slower usually sounds more
+deliberate and natural.
+
+## Things that look broken but are not
+
+**The first generation takes about half a minute; the rest take a few seconds.**
+The voice model has to load once. After that it stays ready, so everything
+following is fast.
+
+**It goes slow again if you leave it alone for a while.** The model unloads
+after 30 minutes of sitting idle so it stops occupying your graphics card. The
+next generation reloads it. If you would rather it stayed ready, change
+*Unload after* in the Compute Device panel -- there is a *Never unload* option.
+There is also an *Unload engine* button if you want your graphics card back
+immediately for a game or another program.
+
+**The page spins forever and nothing happens.** The app was restarted while
+that tab was open. Reload the page with Ctrl+F5.
+
+**It is using the wrong graphics card.** The *Run the model on* dropdown lists
+each card by name -- pick it by the name, not the number. The numbers do not
+match the order you would expect, so "Auto" may not choose the card you assume.
+Switching cards makes the next generation slow once while it moves over.
+
+**Nothing appears when you press record on a phone.** Phones cannot use a
+microphone over a plain network address. Upload a file instead.
+
+## Credit
+
+This is a personal, private build. The underlying app is the IndexTTS2 SECourses
+Premium app by Furkan Gozukara, and the speech engine is IndexTTS by the
+index-tts project. Their original README follows below, unchanged.
+
+What this build adds on top: the download and extract tab, the audio clean-up
+chain, the newer IndexTTS-2.5 speech engine that keeps itself loaded between
+generations, tone presets with per-preset pacing, a speaking-speed control,
+formant-preserving pitch shifting, a graphics-card picker, and network and
+phone access.
 
 ---
+
+# Original app README (SECourses)
+
+> Kept below for credit. Note that its download and installation instructions
+> refer to the original app, not to this build.
 
 # IndexTTS2 SECourses Premium Voice Cloning and Generation App - 1-Click to Install on Windows, RunPod and Massed Compute - Generate Entire Audiobooks With Consistent High Quality Voice
 
