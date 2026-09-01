@@ -209,7 +209,17 @@ def main():
     args = parser.parse_args()
 
     webui = import_webui()
-    webui.tts.hybrid_model_device = False
+
+    # IndexTTS-2.5 dropped two APIs this harness was written against, so five of
+    # the six cases below cannot pass until it is reworked against the subprocess
+    # path: infer_texts (core_batch_distinct) and the per-cue call the subtitle
+    # cases need. Only long_text_b2 exercises a path 2.5 still has.
+    print(
+        "NOTE: on IndexTTS-2.5 only long_text_b2 is expected to pass. "
+        "core_batch_distinct needs infer_texts and the subtitle cases need "
+        "per-cue timing; both went away with the engine swap.",
+        file=sys.stderr,
+    )
 
     report = {
         "started_at": datetime.now().isoformat(),

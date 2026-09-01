@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import gc
 import json
 import os
 import sys
@@ -18,13 +19,20 @@ import engine_paths
 
 engine_paths.prepend_engine_to_sys_path()
 
+import engine_protocol
 from webui_generation_runner import create_tts, run_generation_request
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="IndexTTS WebUI subprocess worker")
-    parser.add_argument("--request-file", required=True, help="Path to the generation request JSON file")
-    parser.add_argument("--result-file", required=True, help="Path to the result JSON file")
+    parser.add_argument(
+        "--serve",
+        action="store_true",
+        help="Stay alive and read one generation request per line from stdin. "
+             "The model is loaded once and reused, which is how the UI runs it.",
+    )
+    parser.add_argument("--request-file", help="Path to the generation request JSON file")
+    parser.add_argument("--result-file", help="Path to the result JSON file")
     parser.add_argument(
         "--progress-file",
         default=None,
@@ -32,7 +40,10 @@ def parse_args() -> argparse.Namespace:
              "A gradio Progress object cannot cross a process boundary, so the parent "
              "tails this file instead.",
     )
-    return parser.parse_args()
+    args = parser.parse_args()
+    if not args.serve and not (args.request_file and args.result_file):
+        parser.error("--request-file and --result-file are required without --serve")
+    return args
 
 
 def make_progress_writer(path: str):
@@ -59,29 +70,147 @@ def make_progress_writer(path: str):
     return write_progress
 
 
-def main() -> int:
-    args = parse_args()
+def write_result(result_file: str, payload: dict) -> None:
+    parent = os.path.dirname(result_file)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+    with open(result_file, "w", encoding="utf-8") as handle:
+        json.dump(payload, handle, indent=2, ensure_ascii=False)
 
+
+def run_one(request: dict, tts, progress_file: str | None) -> dict:
+    progress_callback = make_progress_writer(progress_file) if progress_file else None
+    try:
+        result = run_generation_request(request, tts, progress_callback=progress_callback)
+        return {"status": "ok", **result}
+    except Exception as exc:
+        traceback.print_exc()
+        return {"status": "error", "error": str(exc)}
+
+
+def release_cuda_cache() -> None:
+    """Hand back the allocator's spare blocks between generations.
+
+    The model itself stays resident; this only returns what a single generation
+    grew the reservation by, which over a long session is the difference between
+    steady VRAM and a slow climb into an out-of-memory.
+    """
+    gc.collect()
+    torch = sys.modules.get("torch")
+    if torch is None:
+        return
+    try:
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    except Exception:
+        pass
+
+
+class ModelHolder:
+    """Holds the loaded engine and rebuilds it when the runtime options change.
+
+    Device and precision are chosen in the UI and travel with each request, so
+    the worker cannot assume the model it already has is the one being asked
+    for. The old model is dropped before the new one is built: loading a second
+    copy alongside the first is how a 24 GB card runs out on a device switch.
+    """
+
+    def __init__(self) -> None:
+        self._tts = None
+        self._key: str | None = None
+
+    def get(self, runtime: dict):
+        key = json.dumps(runtime, sort_keys=True, default=str)
+        if self._tts is not None and key == self._key:
+            return self._tts
+
+        if self._tts is not None:
+            print("Runtime options changed; reloading the engine.", flush=True)
+            self.release()
+
+        self._tts = create_tts(runtime)
+        self._key = key
+        return self._tts
+
+    def release(self) -> None:
+        self._tts = None
+        self._key = None
+        release_cuda_cache()
+
+
+def serve() -> int:
+    """Read one request per stdin line until stdin closes or shutdown arrives."""
+    holder = ModelHolder()
+
+    # Announced before any model work: the parent waits on this to know the
+    # process is alive, and loading here would make starting the worker cost
+    # VRAM even when no one has asked for audio yet.
+    print(engine_protocol.READY_SENTINEL, flush=True)
+
+    # readline() rather than `for line in sys.stdin`: iterating a text stream
+    # reads ahead into an internal buffer, so a single line written by the
+    # parent can sit unread until more arrives -- which, with one request per
+    # line and the parent waiting for the reply, is a hang.
+    while True:
+        line = sys.stdin.readline()
+        if not line:
+            break
+        if not line.strip():
+            continue
+
+        try:
+            message = engine_protocol.decode_message(line)
+        except ValueError as exc:
+            print(f"worker: {exc}", file=sys.stderr, flush=True)
+            continue
+
+        if message.get("command") == engine_protocol.SHUTDOWN_COMMAND:
+            break
+
+        result_file = message.get("result_file")
+        try:
+            with open(message["request_file"], "r", encoding="utf-8") as handle:
+                request = json.load(handle)
+            tts = holder.get(request["runtime"])
+            payload = run_one(request, tts, message.get("progress_file"))
+        except Exception as exc:
+            traceback.print_exc()
+            payload = {"status": "error", "error": str(exc)}
+
+        try:
+            write_result(result_file, payload)
+        except OSError as exc:
+            print(f"worker: could not write result file: {exc}", file=sys.stderr, flush=True)
+
+        release_cuda_cache()
+
+        # Last, and only after the result file is closed: the parent treats this
+        # line as permission to read that file.
+        print(engine_protocol.DONE_SENTINEL, flush=True)
+
+    holder.release()
+    return 0
+
+
+def run_once(args: argparse.Namespace) -> int:
+    """Single-shot mode: one generation, then exit. Kept for scripted runs."""
     with open(args.request_file, "r", encoding="utf-8") as handle:
         request = json.load(handle)
 
-    progress_callback = make_progress_writer(args.progress_file) if args.progress_file else None
-
     try:
         tts = create_tts(request["runtime"])
-        result = run_generation_request(request, tts, progress_callback=progress_callback)
-        payload = {"status": "ok", **result}
-        exit_code = 0
+        payload = run_one(request, tts, args.progress_file)
     except Exception as exc:
         traceback.print_exc()
         payload = {"status": "error", "error": str(exc)}
-        exit_code = 1
 
-    os.makedirs(os.path.dirname(args.result_file), exist_ok=True)
-    with open(args.result_file, "w", encoding="utf-8") as handle:
-        json.dump(payload, handle, indent=2, ensure_ascii=False)
+    write_result(args.result_file, payload)
+    return 0 if payload.get("status") == "ok" else 1
 
-    return exit_code
+
+def main() -> int:
+    args = parse_args()
+    return serve() if args.serve else run_once(args)
 
 
 if __name__ == "__main__":

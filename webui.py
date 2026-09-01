@@ -12,7 +12,6 @@ from datetime import datetime
 import glob
 from pathlib import Path
 import platform
-import signal
 import subprocess
 import tempfile
 import shutil
@@ -34,6 +33,7 @@ sys.path.append(os.path.join(current_dir, "indextts"))
 # This process never imports the engine — it only needs to know where the engine
 # lives and which interpreter runs it, so that it can spawn the worker.
 import engine_paths
+import engine_worker
 
 import argparse
 parser = argparse.ArgumentParser(
@@ -108,42 +108,9 @@ import webui_audio_cleanup as audio_cleanup
 import audio_cleanup_shared as cleanup_shared
 import webui_voice_shaping as voice_shaping
 import webui_tone_presets as tone_presets
-from webui_generation_runner import create_tts as create_generation_tts, run_generation_request
 
 i18n = I18nAuto(language="Auto")
 MODE = 'local'
-
-
-class LazyTTSProxy:
-    def __init__(self, factory):
-        self._factory = factory
-        self._instance = None
-        self._lock = threading.Lock()
-
-    def get_instance(self):
-        if self._instance is None:
-            with self._lock:
-                if self._instance is None:
-                    self._instance = self._factory()
-        return self._instance
-
-    def release_instance(self):
-        with self._lock:
-            instance = self._instance
-            self._instance = None
-        return instance
-
-    def is_loaded(self):
-        return self._instance is not None
-
-    def __getattr__(self, item):
-        return getattr(self.get_instance(), item)
-
-    def __setattr__(self, key, value):
-        if key in {"_factory", "_instance", "_lock"}:
-            object.__setattr__(self, key, value)
-            return
-        setattr(self.get_instance(), key, value)
 
 
 DEVICE_CPU = "cpu"
@@ -155,9 +122,9 @@ DEVICE_AUTO_LABEL = "Auto (first CUDA device)"
 class DeviceSelection:
     """Holds the device the next model load should use.
 
-    The model is built by a zero-argument factory inside LazyTTSProxy, so the
-    choice cannot be passed as a parameter; it is read back out here at load
-    time. Guarded by a lock because the UI thread writes it while a generation
+    The model loads in the generation subprocess, so the choice cannot be
+    passed down the call stack; it is read back out here when the request is
+    built. Guarded by a lock because the UI thread writes it while a generation
     thread may be reading it.
     """
 
@@ -234,59 +201,6 @@ ENGINE_LANGUAGES = [
 DEFAULT_ENGINE_LANGUAGE = "EN"
 
 
-def _create_inprocess_tts():
-    return create_generation_tts(_build_tts_runtime_options())
-
-
-tts = LazyTTSProxy(_create_inprocess_tts)
-
-
-def unload_inprocess_tts():
-    instance = tts.release_instance()
-    if instance is None:
-        return False
-
-    for attr in (
-        "qwen_emo",
-        "gpt",
-        "semantic_model",
-        "semantic_codec",
-        "s2mel",
-        "campplus_model",
-        "bigvgan",
-        "emo_matrix",
-        "spk_matrix",
-        "mel_fn",
-        "extract_features",
-        "semantic_mean",
-        "semantic_std",
-        "cache_spk_cond",
-        "cache_s2mel_style",
-        "cache_s2mel_prompt",
-        "cache_spk_audio_prompt",
-        "cache_spk_prompt_key",
-        "cache_emo_cond",
-        "cache_emo_audio_prompt",
-        "cache_emo_prompt_key",
-        "cache_mel",
-        "gr_progress",
-    ):
-        if hasattr(instance, attr):
-            setattr(instance, attr, None)
-
-    gc.collect()
-    torch_module = sys.modules.get("torch")
-    if torch_module is not None:
-        try:
-            if torch_module.cuda.is_available():
-                torch_module.cuda.empty_cache()
-                if hasattr(torch_module.cuda, "ipc_collect"):
-                    torch_module.cuda.ipc_collect()
-            elif hasattr(torch_module, "mps") and torch_module.backends.mps.is_available():
-                torch_module.mps.empty_cache()
-        except Exception:
-            pass
-    return True
 # 支持的语言列表
 LANGUAGES = {
     "中文": "zh_CN",
@@ -1115,51 +1029,31 @@ def normalize_emo_vector(emo_vector, apply_bias=True, max_emotion_sum=0.8, custo
     return emo_vector
 
 
+# The engine worker owns the process and answers "is one running"; this state
+# only carries what a cancel needs about the generation currently in flight.
 _SUBPROCESS_STATE_LOCK = threading.Lock()
 _SUBPROCESS_STATE = {
-    "process": None,
-    "request_file": None,
-    "result_file": None,
+    "active": False,
     "metadata_path": None,
     "task_id": None,
     "canceled": False,
     "cancel_reason": None,
 }
+_IDLE_SUBPROCESS_STATE = dict(_SUBPROCESS_STATE)
 
 
-def _clear_subprocess_state(expected_process=None):
+def _clear_subprocess_state():
     with _SUBPROCESS_STATE_LOCK:
-        process = _SUBPROCESS_STATE.get("process")
-        if expected_process is not None and process is not expected_process:
-            return None
-
         snapshot = dict(_SUBPROCESS_STATE)
-        _SUBPROCESS_STATE.update(
-            {
-                "process": None,
-                "request_file": None,
-                "result_file": None,
-                "metadata_path": None,
-                "task_id": None,
-                "canceled": False,
-                "cancel_reason": None,
-            }
-        )
+        _SUBPROCESS_STATE.update(_IDLE_SUBPROCESS_STATE)
         return snapshot
 
 
-def _register_subprocess_state(process, request_file, result_file, metadata_path, task_id):
+def _register_subprocess_state(metadata_path, task_id):
     with _SUBPROCESS_STATE_LOCK:
-        current_process = _SUBPROCESS_STATE.get("process")
-        if current_process is not None and current_process.poll() is None:
-            _terminate_process_tree(process)
-            raise gr.Error("A subprocess generation is already running.")
-
         _SUBPROCESS_STATE.update(
             {
-                "process": process,
-                "request_file": request_file,
-                "result_file": result_file,
+                "active": True,
                 "metadata_path": metadata_path,
                 "task_id": task_id,
                 "canceled": False,
@@ -1211,29 +1105,6 @@ def _mark_metadata_canceled(metadata_path, reason):
         metadata["processing"]["elapsed_seconds"] = round(elapsed_seconds, 3)
         metadata["processing"]["elapsed_human"] = format_elapsed_duration(elapsed_seconds)
     write_metadata_file(metadata_path, metadata)
-
-
-def _terminate_process_tree(process):
-    if process is None or process.poll() is not None:
-        return
-
-    try:
-        if os.name == "nt":
-            subprocess.run(
-                ["taskkill", "/PID", str(process.pid), "/T", "/F"],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                check=False,
-            )
-        else:
-            os.killpg(os.getpgid(process.pid), signal.SIGKILL)
-    except ProcessLookupError:
-        pass
-    except Exception:
-        try:
-            process.kill()
-        except Exception:
-            pass
 
 
 def _prepare_generation_request(
@@ -1292,7 +1163,6 @@ def _prepare_generation_request(
     emo_bias_depression,
     emo_bias_surprise,
     emo_bias_calm,
-    use_subprocess_system,
 ):
     subtitle_mode = bool(subtitle_mode)
     if not prompt:
@@ -1395,8 +1265,8 @@ def _prepare_generation_request(
         "subtitle_format": get_subtitle_format_label(subtitle_file) if subtitle_mode and subtitle_file else None,
         "low_memory_mode": bool(low_memory_mode),
         "prevent_vram_accumulation": bool(prevent_vram_accumulation),
-        "use_subprocess_system": bool(use_subprocess_system),
-        "execution_mode": "subprocess" if use_subprocess_system else "main_process",
+        "use_subprocess_system": True,
+        "execution_mode": "subprocess",
         "resolved_generation_kwargs": infer_kwargs,
         "subtitle_timing_overrides": (
             {
@@ -1613,50 +1483,24 @@ def _run_generation_subprocess(request):
         with open(request_path, "w", encoding="utf-8") as handle:
             json.dump(request, handle, indent=2, ensure_ascii=False)
 
-        # The worker runs under the ENGINE's interpreter, not this one: the two
-        # need different numpy majors, which is the whole reason generation is a
-        # subprocess rather than a function call.
-        cmd = [
-            engine_paths.ENGINE_PYTHON,
-            os.path.join(current_dir, "webui_subprocess_worker.py"),
-            "--request-file",
-            request_path,
-            "--result-file",
-            result_path,
-            "--progress-file",
-            progress_path,
-        ]
-        popen_kwargs = {
-            "cwd": current_dir,
-            "env": {
-                **os.environ,
-                "PYTHONUNBUFFERED": "1",
-                # Pass the resolved checkout through, so an override set here is
-                # the one the worker uses rather than its own default.
-                engine_paths.ENGINE_ROOT_ENV: engine_paths.ENGINE_ROOT,
-            },
-        }
-        if os.name == "nt":
-            popen_kwargs["creationflags"] = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
-        else:
-            popen_kwargs["start_new_session"] = True
-
-        process = subprocess.Popen(cmd, **popen_kwargs)
-        _register_subprocess_state(
-            process,
-            request_path,
-            result_path,
-            request["metadata_path"],
-            request["task_id"],
-        )
+        _register_subprocess_state(request["metadata_path"], request["task_id"])
+        try:
+            # The worker is long-lived and runs under the ENGINE's interpreter,
+            # which needs a different numpy major than this one. It starts on
+            # first use and keeps the model loaded afterwards, so only the first
+            # generation of a session pays the thirty second load.
+            engine_worker.WORKER.submit(request_path, result_path, progress_path)
+        except engine_worker.EngineWorkerError as exc:
+            _clear_subprocess_state()
+            raise gr.Error(str(exc)) from exc
 
         # A gradio Progress object cannot cross a process boundary, so the
         # worker appends progress events to progress_path and we tail it while
-        # the child runs. Falling behind is harmless: only the newest event is
-        # rendered, and the loop always drains what is there before exiting.
+        # the generation runs. Falling behind is harmless: only the newest event
+        # is rendered, and the loop always drains what is there before exiting.
         consumed = 0
         last_fraction = 0.0
-        while process.poll() is None:
+        while not engine_worker.WORKER.finished():
             consumed, last_fraction, event = _drain_progress_file(
                 progress_path, consumed, last_fraction
             )
@@ -1673,24 +1517,35 @@ def _run_generation_subprocess(request):
             progress_path, consumed, last_fraction
         )
 
-        return_code = process.returncode
-        state_snapshot = _clear_subprocess_state(process) or {}
+        outcome = engine_worker.WORKER.finish()
+        state_snapshot = _clear_subprocess_state() or {}
         canceled = bool(state_snapshot.get("canceled"))
         cancel_reason = state_snapshot.get("cancel_reason") or "Generation was canceled."
 
         if canceled:
             raise gr.Error(cancel_reason)
 
-        if not os.path.exists(result_path):
-            if return_code != 0:
-                raise gr.Error("Generation subprocess exited unexpectedly. Check the console output.")
-            raise gr.Error("Generation subprocess finished without a result file.")
+        # The result file is checked before the worker's health: a worker that
+        # wrote a good result and then died on the way out still produced the
+        # audio, and throwing that away would be the wrong answer.
+        result = None
+        if os.path.exists(result_path):
+            try:
+                with open(result_path, "r", encoding="utf-8") as handle:
+                    result = json.load(handle)
+            except (OSError, json.JSONDecodeError):
+                result = None
 
-        with open(result_path, "r", encoding="utf-8") as handle:
-            result = json.load(handle)
+        if result is None:
+            if outcome == "died":
+                raise gr.Error(
+                    "The engine worker stopped during generation. Check the console "
+                    "output; a fresh one starts on the next generation."
+                )
+            raise gr.Error("The engine worker finished without writing a readable result.")
 
         if result.get("status") != "ok":
-            raise gr.Error(result.get("error") or "Generation subprocess failed.")
+            raise gr.Error(result.get("error") or "Generation failed.")
 
         subtitle_status_message = result.get("subtitle_status") or ""
         video_path = result.get("video_path")
@@ -1706,48 +1561,32 @@ def _run_generation_subprocess(request):
         _cleanup_temp_file(result_path)
         _cleanup_temp_file(progress_path)
 
-
 def cancel_generation_process(use_subprocess_system, cancel_confirmed):
     if not cancel_confirmed:
         return gr.update()
 
     with _SUBPROCESS_STATE_LOCK:
-        process = _SUBPROCESS_STATE.get("process")
+        active = bool(_SUBPROCESS_STATE.get("active"))
         metadata_path = _SUBPROCESS_STATE.get("metadata_path")
         task_id = _SUBPROCESS_STATE.get("task_id")
-        if process is None or process.poll() is not None:
-            _SUBPROCESS_STATE.update(
-                {
-                    "process": None,
-                    "request_file": None,
-                    "result_file": None,
-                    "metadata_path": None,
-                    "task_id": None,
-                    "canceled": False,
-                    "cancel_reason": None,
-                }
-            )
-            message = (
-                "Subprocess mode is disabled and no subprocess generation is running."
-                if not use_subprocess_system
-                else "No subprocess generation is currently running."
-            )
-            return gr.update(value=message)
+        if not active:
+            _SUBPROCESS_STATE.update(_IDLE_SUBPROCESS_STATE)
+            return gr.update(value="No generation is currently running.")
 
         _SUBPROCESS_STATE["canceled"] = True
         _SUBPROCESS_STATE["cancel_reason"] = "Generation canceled by user."
 
     _mark_metadata_canceled(metadata_path, "Generation canceled by user.")
-    _terminate_process_tree(process)
+
+    # Killing the worker is the only way to stop a generation mid-flight: the
+    # engine offers no cooperative cancel. It costs the loaded model, so the
+    # next generation pays a reload -- which is the right trade for a stop
+    # button, but is why cancel is not a free way to reset.
+    engine_worker.WORKER.kill()
     task_label = f" task {task_id}" if task_id else ""
-    return gr.update(value=f"Cancel signal sent to subprocess for{task_label}.")
-
-
-def on_subprocess_mode_change(use_subprocess_system):
-    if use_subprocess_system:
-        unload_inprocess_tts()
-
-
+    return gr.update(
+        value=f"Canceled{task_label}. The engine reloads on the next generation."
+    )
 def resolve_max_text_tokens(max_text_tokens_per_segment):
     if not max_text_tokens_per_segment:
         return 120
@@ -1951,32 +1790,16 @@ def gen_single(emo_control_method,prompt, text, subtitle_mode, subtitle_file, sa
         emo_bias_depression,
         emo_bias_surprise,
         emo_bias_calm,
-        bool(use_subprocess_system),
     )
 
-    if use_subprocess_system:
-        # _run_generation_subprocess is a generator: it streams progress while
-        # the child runs, then yields the final result. yield from, not return.
-        yield from _run_generation_subprocess(request)
-        return
-
-    # In-process mode reports through gradio's own Progress object, which the
-    # engine calls via tts.gr_progress. Mirror it onto the visible bar too.
-    def _forward_progress(value, desc: str = ""):
-        progress(value, desc=desc)
-
-    result = run_generation_request(
-        request, tts.get_instance(), progress_callback=_forward_progress
-    )
-    subtitle_status_message = result.get("subtitle_status") or ""
-    video_path = result.get("video_path")
-    yield (
-        gr.update(value=render_progress_bar(
-            1.0, os.path.basename(result["output_path"]), done=True)),
-        gr.update(value=result["output_path"], visible=True),
-        gr.update(value=video_path, visible=bool(video_path)),
-        gr.update(value=subtitle_status_message, visible=bool(subtitle_status_message)),
-    )
+    # There is no in-process alternative: IndexTTS-2.5 needs numpy 2.x and
+    # Python 3.11 while this UI runs on numpy 1.26 and Python 3.10, so the model
+    # can only be built in a child under the engine's own interpreter. The
+    # use_subprocess_system flag is accepted for saved presets and for the
+    # cancel button, but it can no longer select anything.
+    # _run_generation_subprocess is a generator: it streams progress while the
+    # child runs, then yields the final result. yield from, not return.
+    yield from _run_generation_subprocess(request)
 
 def update_prompt_audio():
     update_button = gr.update(interactive=True)
@@ -2137,17 +1960,75 @@ def available_devices():
     return choices
 
 
+# Offered idle limits, in seconds. 0 means the worker stays loaded until it is
+# unloaded by hand or the app closes.
+ENGINE_IDLE_CHOICES = [
+    ("5 minutes", 300),
+    ("10 minutes", 600),
+    ("15 minutes", 900),
+    ("30 minutes", 1800),
+    ("1 hour", 3600),
+    ("2 hours", 7200),
+    ("Never unload", 0),
+]
+
+
+def engine_idle_choices():
+    """The offered limits, plus the current one when it is not among them.
+
+    INDEXTTS25_IDLE_SECONDS can be set to anything, and a dropdown whose value
+    is not one of its choices renders blank.
+    """
+    current = int(engine_worker.DEFAULT_IDLE_SECONDS)
+    choices = list(ENGINE_IDLE_CHOICES)
+    if current not in [seconds for _, seconds in choices]:
+        label = "Never unload" if current <= 0 else f"{current / 60.0:g} minutes"
+        choices.append((f"{label} (from INDEXTTS25_IDLE_SECONDS)", current))
+    return choices
+
+
+def on_engine_idle_change(seconds):
+    """Apply a new idle limit to the running worker."""
+    try:
+        applied = engine_worker.WORKER.set_idle_seconds(float(seconds))
+    except (TypeError, ValueError):
+        return gr.update(value="That is not a valid idle limit.")
+
+    if applied <= 0:
+        note = "The engine will stay loaded until you unload it or close the app."
+    else:
+        note = f"The engine will unload after {applied / 60.0:g} minutes idle."
+    return gr.update(value=f"{engine_worker.WORKER.describe()} {note}")
+
+
+def describe_engine_worker():
+    return gr.update(value=engine_worker.WORKER.describe())
+
+
+def unload_engine_worker():
+    """Drop the loaded model so the GPU is free for something else."""
+    if engine_worker.WORKER.status()["busy"]:
+        return gr.update(
+            value="A generation is running. Cancel it first, or wait for it to finish."
+        )
+    was_running = engine_worker.WORKER.shutdown()
+    if not was_running:
+        return gr.update(value="Engine worker: not running, nothing to unload.")
+    return gr.update(
+        value="Engine worker unloaded and VRAM released. "
+              "The next generation starts a fresh one."
+    )
+
+
 def on_device_change(device_value):
-    """Record the new device and drop the loaded model so it reloads onto it."""
+    """Record the device the next generation subprocess should load onto."""
     if not selected_device.set(device_value):
         return gr.update(value=f"Already using {device_value}.", visible=True)
-    was_loaded = unload_inprocess_tts()
     if device_value == DEVICE_CPU:
         detail = "CPU selected - generation will be much slower, and fp16 is disabled there."
     else:
         detail = f"{device_value} selected."
-    suffix = " Model unloaded; it reloads on the next generation." if was_loaded else ""
-    return gr.update(value=detail + suffix, visible=True)
+    return gr.update(value=detail + " It applies to the next generation.", visible=True)
 
 # Label of the tab that owns the reference voice, and the client-side hop that
 # focuses it after a hand-off. Gradio's own tab selection needs an explicit
@@ -2629,7 +2510,8 @@ with gr.Blocks(title=APP_TITLE) as demo:
                 use_subprocess_system = gr.Checkbox(
                     label="Use Subprocess System",
                     value=True,
-                    info="When enabled, each generation runs in a separate process so the main UI can stay clean and releasing the child process frees its RAM and VRAM."
+                    interactive=False,
+                    info="Always on for IndexTTS-2.5: the engine runs under its own Python, so every generation happens in a separate process. Ending that process also frees its RAM and VRAM."
                 )
                 input_text_single = gr.TextArea(
                     label="Text to Synthesize",
@@ -3000,7 +2882,7 @@ with gr.Blocks(title=APP_TITLE) as demo:
                     label="Run the model on",
                     choices=available_devices(),
                     value=DEVICE_AUTO,
-                    info="Changing this unloads the model; it reloads on the next generation.",
+                    info="The engine picks this up on the next generation, reloading the model onto it.",
                 )
                 device_status = gr.Textbox(
                     label="Device status",
@@ -3009,6 +2891,30 @@ with gr.Blocks(title=APP_TITLE) as demo:
                     interactive=False,
                     lines=1,
                 )
+            with gr.Row():
+                engine_status = gr.Textbox(
+                    label="Engine worker",
+                    value="Engine worker: not running. It starts on the next generation.",
+                    interactive=False,
+                    lines=2,
+                    scale=3,
+                    info="The engine stays loaded between generations so only the "
+                         "first one waits for the model. That means it holds VRAM "
+                         "while loaded.",
+                )
+                with gr.Column(scale=1, min_width=200):
+                    engine_idle_choice = gr.Dropdown(
+                        label="Unload after",
+                        choices=engine_idle_choices(),
+                        value=int(engine_worker.DEFAULT_IDLE_SECONDS),
+                        info="How long the engine may sit idle before it gives "
+                             "the GPU back. Set INDEXTTS25_IDLE_SECONDS to change "
+                             "the startup default.",
+                    )
+                    engine_refresh_btn = gr.Button("Refresh status", size="sm")
+                    engine_unload_btn = gr.Button(
+                        "Unload engine (free VRAM)", size="sm", variant="stop"
+                    )
 
         with gr.Row():
             with gr.Column():
@@ -4005,13 +3911,6 @@ with gr.Blocks(title=APP_TITLE) as demo:
         show_progress="hidden"
     )
 
-    use_subprocess_system.change(
-        fn=on_subprocess_mode_change,
-        inputs=[use_subprocess_system],
-        queue=False,
-        show_progress="hidden",
-    )
-
     gen_button.click(gen_single,
                      inputs=[emo_control_method,prompt_audio, input_text_single, subtitle_mode, subtitle_file, save_used_audio, output_filename, mp4_image_input, emo_upload, emo_weight,
                               vec1, vec2, vec3, vec4, vec5, vec6, vec7, vec8,
@@ -4324,6 +4223,28 @@ with gr.Blocks(title=APP_TITLE) as demo:
         on_device_change,
         inputs=[device_dropdown],
         outputs=[device_status],
+        queue=False,
+        show_progress="hidden",
+    )
+
+    engine_idle_choice.change(
+        on_engine_idle_change,
+        inputs=[engine_idle_choice],
+        outputs=[engine_status],
+        queue=False,
+        show_progress="hidden",
+    )
+
+    engine_refresh_btn.click(
+        describe_engine_worker,
+        outputs=[engine_status],
+        queue=False,
+        show_progress="hidden",
+    )
+
+    engine_unload_btn.click(
+        unload_engine_worker,
+        outputs=[engine_status],
         queue=False,
         show_progress="hidden",
     )
