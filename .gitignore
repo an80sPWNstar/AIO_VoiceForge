@@ -1,40 +1,178 @@
-# Development Tools.
-.mypy_cache/
-.ruff_cache/
+# Derived from github/gitignore Python.gitignore, trimmed to entries that can
+# actually occur in these projects, plus the OS/editor blocks from the Global
+# templates. Keep the section-comment layout when adding to it.
+
+# Byte-compiled / optimized / DLL files
 __pycache__/
-.idea/
-.vscode/
-
-# Environments.
-.venv*/
-venv*/
-conda_env*/
-
-# Python Bytecode.
 *.py[cod]
+*$py.class
 
-# Distribution/Packaging.
-/build/
-/dist/
+# C extensions
+*.so
+
+# Distribution / packaging
+build/
+dist/
+sdist/
+wheels/
+develop-eggs/
+downloads/
+eggs/
+.eggs/
+parts/
+var/
 *.egg-info/
-nul
-.pypirc
-.claude
-checkpoints
-# Operating System Junk.
-*.DS_Store
-Thumbs.db
-desktop.ini
+*.egg
+.installed.cfg
+MANIFEST
 
-# IndexTTS.
+# Installer logs
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Unit test / coverage reports
+htmlcov/
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+.pytest_cache/
+cover/
+
+# Type checkers and linters
+.mypy_cache/
+.dmypy.json
+dmypy.json
+.pyre/
+.pytype/
+.ruff_cache/
+
+# Environments
+.env
+.env.*
+!.env.example
+.venv
+venv/
+ENV/
+env/
+env.bak/
+venv.bak/
+
+# Jupyter / IPython
+.ipynb_checkpoints
+profile_default/
+ipython_config.py
+
+# Translations
+*.mo
+*.pot
+
+# Django / Flask
+local_settings.py
+db.sqlite3
+db.sqlite3-journal
+instance/
+.webassets-cache
+
+# Sphinx / mkdocs
+docs/_build/
+/site
+
+# PEP 582
+__pypackages__/
+
+# Celery
+celerybeat-schedule
+celerybeat.pid
+
+# Editor directories and files
+.idea/
+.vscode/*
+!.vscode/extensions.json
+.spyderproject
+.spyproject
+.ropeproject
+*.swp
+*.swo
+*~
+
+# Windows thumbnail cache files
+Thumbs.db
+Thumbs.db:encryptable
+ehthumbs.db
+
+# Windows dump file
+*.stackdump
+
+# Windows folder config file
+[Dd]esktop.ini
+
+# Recycle Bin used on file shares
+$RECYCLE.BIN/
+
+# Windows shortcuts
+*.lnk
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+.Spotlight-V100
+.Trashes
+
+# Linux
+.directory
+.Trash-*
+.nfs*
+
+# Project scratch -- keep throwaway output in one ignored directory
+scratch/
+*.stop
+
+# Project-specific
+# The engine and its weights are downloaded, not stored here; the config
+# yaml is the exception because it records what the checkpoints should be.
 /cache/
 /checkpoints/*
 !/checkpoints/*.yaml
+
+# Generated audio, video and task folders.
 /outputs/
+
+# Built CUDA extension inside the vendored engine.
 indextts/s2mel/modules/bigvgan/alias_free_activation/cuda/build/
-a.png
+
+# Gradio's own scratch directory.
+gradio/
+
+# Saved UI presets are per-machine.
+presets/
+
+# Local fixtures for tools/run_pipeline_regression.py. NOTE: the harness
+# needs both and neither is in the repo, so a fresh clone cannot run it.
 demo_voice_for_test.mp3
 test2.srt
-gradio/
+
+# Unrelated tool that has lived in this folder.
 Trellis_2_3D_Generator/
-presets/
+
+# Stray artefacts.
+a.png
+nul
+
+# Carried over from the previous .gitignore: neither exists in the repo
+# today, but both were deliberate and cost nothing to keep.
+.claude
+conda_env*/
+
+# Suffixed virtualenvs (.venv310/, venv-cu129/) that the bare template
+# entries above do not match, and the PyPI credentials file.
+.venv*/
+venv*/
+.pypirc
