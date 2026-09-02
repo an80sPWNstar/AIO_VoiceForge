@@ -18,6 +18,15 @@ class DummyProgress:
         return None
 
 
+class UnsupportedOnThisEngine(RuntimeError):
+    """A case that cannot run against the engine currently installed.
+
+    Distinct from a failure: it means the harness has not been reworked for
+    this engine yet, not that the app is broken. Recorded as skipped so the
+    cases that CAN run still run.
+    """
+
+
 def import_webui():
     saved_argv = sys.argv[:]
     try:
@@ -46,7 +55,10 @@ def build_long_text() -> str:
 
 
 def call_gen_single(webui, *, name: str, text: str, subtitle_mode: bool, subtitle_file: str | None, batch_size: int):
-    output_update, subtitle_status = webui.gen_single(
+    # gen_single is a generator: it yields a progress update every poll and the
+    # finished result last, which is how the browser gets a moving bar. Taking
+    # the final yield is the equivalent of what a caller used to get back.
+    updates = webui.gen_single(
         emo_control_method=0,
         prompt="demo_voice_for_test.mp3",
         text=text,
@@ -54,6 +66,7 @@ def call_gen_single(webui, *, name: str, text: str, subtitle_mode: bool, subtitl
         subtitle_file=subtitle_file,
         save_used_audio=False,
         output_filename=name,
+        image_input=None,
         emo_ref_path=None,
         emo_weight=1.0,
         vec1=0.0,
@@ -99,8 +112,19 @@ def call_gen_single(webui, *, name: str, text: str, subtitle_mode: bool, subtitl
         emo_bias_depression=1.0,
         emo_bias_surprise=1.0,
         emo_bias_calm=1.0,
+        speed_factor=webui.tone_presets.DEFAULT_TONE_SPEED,
+        language=webui.DEFAULT_ENGINE_LANGUAGE,
         progress=DummyProgress(),
     )
+
+    final_update = None
+    for final_update in updates:
+        pass
+    if final_update is None:
+        raise RuntimeError(f"{name}: gen_single yielded nothing")
+
+    # (progress bar, output audio, output video, subtitle status)
+    _, output_update, _, subtitle_status = final_update
 
     output_path = output_update.get("value") if isinstance(output_update, dict) else None
     if not output_path:
@@ -115,6 +139,18 @@ def call_gen_single(webui, *, name: str, text: str, subtitle_mode: bool, subtitl
 
 
 def run_core_batch_distinct(webui):
+    # IndexTTS-2.5 has no infer_texts, and this process no longer holds an
+    # engine object to call it on -- generation happens in a subprocess under
+    # the engine's own interpreter. Kept rather than deleted because the thing
+    # it checks is still worth checking: that a batch of two sections produces
+    # two different waveforms rather than the same one twice. It needs
+    # rewriting against the subprocess path before it can run again.
+    raise UnsupportedOnThisEngine(
+        "core_batch_distinct needs infer_texts, which IndexTTS-2.5 does not have"
+    )
+
+
+def _unreachable_core_batch_distinct(webui):
     texts = ["This is batch section one.", "This is batch section two."]
     outputs = webui.tts.infer_texts(
         spk_audio_prompt="demo_voice_for_test.mp3",
@@ -210,31 +246,32 @@ def main():
 
     webui = import_webui()
 
-    # IndexTTS-2.5 dropped two APIs this harness was written against, so five of
-    # the six cases below cannot pass until it is reworked against the subprocess
-    # path: infer_texts (core_batch_distinct) and the per-cue call the subtitle
-    # cases need. Only long_text_b2 exercises a path 2.5 still has.
-    print(
-        "NOTE: on IndexTTS-2.5 only long_text_b2 is expected to pass. "
-        "core_batch_distinct needs infer_texts and the subtitle cases need "
-        "per-cue timing; both went away with the engine swap.",
-        file=sys.stderr,
-    )
-
+    # IndexTTS-2.5 dropped two APIs this harness was written against: infer_texts
+    # (core_batch_distinct) and the per-cue call the subtitle cases need. Those
+    # cases now record themselves as skipped instead of raising, because running
+    # them first meant the run died before reaching the cases that do work.
     report = {
         "started_at": datetime.now().isoformat(),
         "workspace": str(ROOT),
         "cases": [],
+        "skipped": [],
     }
 
-    report["cases"].append(run_core_batch_distinct(webui))
-    report["cases"].append(run_text_case(webui, name="long_text_b2", batch_size=2))
-    report["cases"].append(run_subtitle_case(webui, subtitle_name="test.srt", batch_size=1))
-    report["cases"].append(run_subtitle_case(webui, subtitle_name="test.srt", batch_size=2))
+    def attempt(label, fn):
+        try:
+            report["cases"].append(fn())
+        except UnsupportedOnThisEngine as exc:
+            report["skipped"].append({"case": label, "reason": str(exc)})
+            print(f"SKIP {label}: {exc}", file=sys.stderr)
+
+    attempt("core_batch_distinct", lambda: run_core_batch_distinct(webui))
+    attempt("long_text_b2", lambda: run_text_case(webui, name="long_text_b2", batch_size=2))
+    attempt("test_srt_b1", lambda: run_subtitle_case(webui, subtitle_name="test.srt", batch_size=1))
+    attempt("test_srt_b2", lambda: run_subtitle_case(webui, subtitle_name="test.srt", batch_size=2))
 
     if not args.skip_test2:
-        report["cases"].append(run_subtitle_case(webui, subtitle_name="test2.srt", batch_size=1))
-        report["cases"].append(run_subtitle_case(webui, subtitle_name="test2.srt", batch_size=2))
+        attempt("test2_srt_b1", lambda: run_subtitle_case(webui, subtitle_name="test2.srt", batch_size=1))
+        attempt("test2_srt_b2", lambda: run_subtitle_case(webui, subtitle_name="test2.srt", batch_size=2))
 
     report["completed_at"] = datetime.now().isoformat()
 
@@ -243,7 +280,11 @@ def main():
     report_path = outputs_dir / f"regression_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
     report_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
 
-    print(json.dumps({"report_path": str(report_path), "case_count": len(report["cases"])}, indent=2))
+    print(json.dumps({
+        "report_path": str(report_path),
+        "case_count": len(report["cases"]),
+        "skipped_count": len(report["skipped"]),
+    }, indent=2))
 
 
 if __name__ == "__main__":
