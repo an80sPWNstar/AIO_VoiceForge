@@ -76,3 +76,20 @@ def _build_tts_runtime_options():
         "use_cuda_kernel": bool(cmd_args.cuda_kernel),
         "device": None if device == DEVICE_AUTO else device,
     }
+
+
+# degrades pronunciation rather than failing.
+ENGINE_LANGUAGES = [
+    ("English", "EN"),
+    ("Chinese", "ZH"),
+    ("Japanese", "JA"),
+    ("Spanish", "ES"),
+    ("Arabic", "AR"),
+]
+DEFAULT_ENGINE_LANGUAGE = "EN"
+
+
+EMO_CHOICES_ALL = ["Same as speaker voice",
+                "Use emotion reference audio",
+                "Use emotion vector control",
+                "Use emotion text description"]
