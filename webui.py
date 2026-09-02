@@ -352,7 +352,8 @@ with gr.Blocks(title=APP_TITLE) as demo:
                         character_name = gr.Textbox(
                             label="Name",
                             value=_char_name0,
-                            placeholder="Name a new voice, or rename the selected one",
+                            placeholder="e.g. Narrator, or TaySwif_Older",
+                            info="Used by Save Loaded Voice As and by Rename.",
                         )
                         with gr.Row():
                             character_new_btn = gr.Button("New", variant="secondary",
@@ -362,10 +363,16 @@ with gr.Blocks(title=APP_TITLE) as demo:
                             character_delete_btn = gr.Button("Delete", variant="stop",
                                                              elem_classes=["action-button"])
                         with gr.Row():
-                            character_use_btn = gr.Button("Use This Voice", variant="primary",
-                                                          elem_classes=["action-button"])
-                            character_add_btn = gr.Button("Add Current Reference", variant="secondary",
-                                                          elem_classes=["action-button"])
+                            character_save_btn = gr.Button(
+                                "Save Loaded Voice As", variant="primary",
+                                elem_classes=["action-button"])
+                            character_use_btn = gr.Button(
+                                "Use This Voice", variant="secondary",
+                                elem_classes=["action-button"])
+                        with gr.Row():
+                            character_add_btn = gr.Button(
+                                "Add Clip to Selected Voice", variant="secondary",
+                                elem_classes=["action-button"])
                         # Deleting a library entry is not undoable, so the button
                         # arms on the first press the same way cancel does.
                         character_delete_confirm = gr.Checkbox(
@@ -1874,6 +1881,13 @@ with gr.Blocks(title=APP_TITLE) as demo:
         character_handlers.use_character_ui,
         inputs=[character_mode, character_select],
         outputs=[prompt_audio, reference_status],
+        queue=False,
+    )
+
+    character_save_btn.click(
+        character_handlers.save_reference_as_new_voice_ui,
+        inputs=[character_mode, character_name, prompt_audio],
+        outputs=[character_select, character_name, character_summary, character_status],
         queue=False,
     )
 

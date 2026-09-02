@@ -449,5 +449,57 @@ class NoHandlerRaisesTests(_Panel):
             call()
 
 
+class SaveLoadedVoiceTests(_Panel):
+    """The one-press path: a reference is loaded and it wants a name.
+
+    Added after the three-step version -- name it, press New, press Add --
+    turned out to be undiscoverable in use. A voice was created and left
+    with zero clips because nothing on the panel connected the loaded
+    reference to the selected voice.
+    """
+
+    def test_one_press_creates_the_voice_and_files_the_clip(self):
+        select, name, summary, status = handlers.save_reference_as_new_voice_ui(
+            store.MODE_ONESHOT, "Narrator", self.a_clip(), self.root)
+        self.assertEqual(select["value"], "narrator")
+        self.assertIn("Saved", status["value"])
+        self.assertEqual(
+            len(store.load_character(self.root, "narrator")["oneshot"]["clips"]), 1)
+
+    def test_saving_again_under_the_same_name_adds_rather_than_refusing(self):
+        # "Already exists" would be technically right and useless: the clip
+        # in hand is almost certainly meant for that voice.
+        handlers.save_reference_as_new_voice_ui(
+            store.MODE_ONESHOT, "Narrator", self.a_clip("one.wav"), self.root)
+        *_, status = handlers.save_reference_as_new_voice_ui(
+            store.MODE_ONESHOT, "Narrator", self.a_clip("two.wav"), self.root)
+        self.assertIn("Added", status["value"])
+        self.assertEqual(
+            len(store.load_character(self.root, "narrator")["oneshot"]["clips"]), 2)
+
+    def test_saving_with_no_reference_loaded_says_so(self):
+        *_, status = handlers.save_reference_as_new_voice_ui(
+            store.MODE_ONESHOT, "Narrator", None, self.root)
+        self.assertIn("Load a reference", status["value"])
+        self.assertEqual(handlers.character_choices(store.MODE_ONESHOT, self.root), [])
+
+    def test_saving_with_no_name_says_so_and_creates_nothing(self):
+        *_, status = handlers.save_reference_as_new_voice_ui(
+            store.MODE_ONESHOT, "   ", self.a_clip(), self.root)
+        self.assertIn("name", status["value"].lower())
+        self.assertEqual(handlers.character_choices(store.MODE_ONESHOT, self.root), [])
+
+    def test_saving_into_rvc_mode_is_refused(self):
+        *_, status = handlers.save_reference_as_new_voice_ui(
+            store.MODE_RVC, "Robot", self.a_clip(), self.root)
+        self.assertIn("model, not clips", status["value"])
+
+    def test_a_disk_failure_while_saving_is_reported(self):
+        with mock.patch.object(store, "create_character", side_effect=OSError(28, "no space")):
+            *_, status = handlers.save_reference_as_new_voice_ui(
+                store.MODE_ONESHOT, "Narrator", self.a_clip(), self.root)
+        self.assertIn("Could not create", status["value"])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -82,7 +82,8 @@ def describe_character(mode: str, slug: str, root: Optional[str] = None) -> str:
 
     clips = (document.get("oneshot") or {}).get("clips", [])
     if not clips:
-        return "**No clips yet.** Load a reference below and press *Add current reference*."
+        return ("**No clips yet.** Load a reference clip in the panel above, "
+                'then press **Save Loaded Voice As** to store it here.')
 
     seconds = store.total_clip_seconds(document)
     headline = (
@@ -259,6 +260,43 @@ def add_reference_to_character_ui(mode: str, slug: str, reference_path: Optional
     except OSError as exc:
         return _refresh(mode, slug, f"Could not add that clip: {exc}", root)
     return _refresh(mode, slug, "Added the current reference to this voice.", root)
+
+
+def save_reference_as_new_voice_ui(mode: str, name: str, reference_path: Optional[str],
+                                   root: Optional[str] = None):
+    """Save Loaded Voice As pressed: create a voice AND file the clip in one go.
+
+    The three-step version -- name it, press New, then press Add -- is the
+    thing people could not find. This is the same work behind one button,
+    which is how the panel is usually reached for: a reference is already
+    loaded and it wants a name.
+    """
+    if mode == store.MODE_RVC:
+        return _refresh(mode, NO_SELECTION, "An RVC voice holds a model, not clips.", root)
+    if not reference_path:
+        return _refresh(mode, NO_SELECTION, "Load a reference clip first, then save it.", root)
+    if not (name or "").strip():
+        return _refresh(mode, NO_SELECTION, "Type a name for this voice first.", root)
+
+    library = root or CHARACTER_LIBRARY_ROOT
+    try:
+        slug = store.create_character(library, name, mode)
+    except store.CharacterStoreError as exc:
+        # Most often "already exists", and adding to the existing voice is
+        # almost certainly what was meant -- but say which happened.
+        existing = store.slugify(name)
+        if store.load_character(library, existing) is None:
+            return _refresh(mode, NO_SELECTION, str(exc), root)
+        return add_reference_to_character_ui(mode, existing, reference_path, "", root)
+    except OSError as exc:
+        return _refresh(mode, NO_SELECTION, f"Could not create that voice: {exc}", root)
+
+    result = add_reference_to_character_ui(mode, slug, reference_path, "", root)
+    select, name_box, summary, _ = result
+    return (
+        select, name_box, summary,
+        gr.update(value=f"Saved the loaded voice as {name.strip()!r}.", visible=True),
+    )
 
 
 def _wav_duration_seconds(path: str) -> Optional[float]:
