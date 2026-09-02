@@ -5,7 +5,7 @@ import tempfile
 
 import numpy as np
 
-from indextts.utils.subtitle_utils import (
+from subtitle_utils import (
     SUPPORTED_SUBTITLE_EXTENSIONS,
     SubtitleCue,
     build_subtitle_render_units,

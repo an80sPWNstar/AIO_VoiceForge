@@ -2,7 +2,7 @@ import os
 import tempfile
 import unittest
 
-from indextts.utils.task_output_utils import (
+from task_output_utils import (
     build_segment_output_path,
     create_task_output_layout,
     get_next_output_index,
