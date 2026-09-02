@@ -13,7 +13,9 @@ Split out of webui.py. Imports webui_runtime for the checkpoint directory,
 which is why the argument parsing had to move down first.
 """
 
+import html
 import os
+import re
 
 from omegaconf import OmegaConf
 

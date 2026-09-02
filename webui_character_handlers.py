@@ -34,7 +34,11 @@ CHARACTER_LIBRARY_ROOT = os.path.join(
 RVC_TARGET_SECONDS = 600.0
 SOVITS_TARGET_SECONDS = 60.0
 
-NO_SELECTION = ""
+# gradio raises "Value: is not in the list of choices" when a Dropdown is
+# preprocessed with a value absent from its choices, and an empty string is
+# absent from an empty list. None is the value it accepts for "nothing
+# selected", so an empty library must use that and not "".
+NO_SELECTION = None
 
 
 def mode_choices() -> List[Tuple[str, str]]:

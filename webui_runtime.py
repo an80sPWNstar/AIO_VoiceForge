@@ -8,6 +8,7 @@ webui.py, since webui.py imports this first.
 Split out of webui.py.
 """
 
+import os
 import threading
 
 import engine_paths
