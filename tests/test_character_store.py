@@ -225,6 +225,26 @@ class ClipTests(_TempLibrary):
     def test_setting_a_default_that_does_not_exist_is_refused(self):
         self.assertFalse(cs.set_default_clip(self.root, self.slug, "nosuchid"))
 
+    def test_setting_a_valid_default_takes_effect(self):
+        # Coverage showed the whole success path of set_default_clip was
+        # unexercised: only the two refusal branches had tests, so the thing
+        # the "use this clip" button actually does was never run.
+        first = cs.add_clip(self.root, self.slug, self.a_clip("one.wav"))
+        second = cs.add_clip(self.root, self.slug, self.a_clip("two.wav"))
+        self.assertTrue(cs.set_default_clip(self.root, self.slug, second["id"]))
+        self.assertEqual(
+            cs.load_character(self.root, self.slug)["oneshot"]["default_clip_id"],
+            second["id"],
+        )
+        self.assertNotEqual(cs.resolve_clip_path(self.root, self.slug),
+                            cs.resolve_clip_path(self.root, self.slug, first["id"]))
+
+    def test_setting_a_default_on_a_missing_character_is_refused(self):
+        self.assertFalse(cs.set_default_clip(self.root, "nobody", "anyid"))
+
+    def test_removing_a_clip_from_a_missing_character_is_refused(self):
+        self.assertFalse(cs.remove_clip(self.root, "nobody", "anyid"))
+
 
 class ResolveTests(_TempLibrary):
     def setUp(self):
@@ -240,6 +260,12 @@ class ResolveTests(_TempLibrary):
 
     def test_resolving_an_unknown_character_is_none(self):
         self.assertIsNone(cs.resolve_clip_path(self.root, "nobody"))
+
+    def test_resolving_a_clip_id_that_is_not_in_the_document_is_none(self):
+        # Distinct from "the file is gone": here the id itself is unknown, so
+        # the loop finishes without matching. That fall-through had no test.
+        cs.add_clip(self.root, self.slug, self.a_clip())
+        self.assertIsNone(cs.resolve_clip_path(self.root, self.slug, "nosuchid"))
 
     def test_a_document_pointing_at_a_deleted_file_resolves_to_none(self):
         # The UI has to be able to say "that clip is gone" rather than hand a
@@ -305,10 +331,28 @@ class UnreadableLibraryTests(_TempLibrary):
         with mock.patch.object(Path, "iterdir", side_effect=PermissionError(13, "denied")):
             self.assertEqual(cs.list_characters(self.root), [])
 
-    def test_an_entry_that_cannot_be_stat_ed_is_skipped(self):
+    def test_a_root_that_cannot_be_stat_ed_returns_nothing(self):
         cs.create_character(self.root, "Narrator", cs.MODE_ONESHOT)
         with mock.patch.object(Path, "is_dir", side_effect=OSError(5, "io error")):
             self.assertEqual(cs.list_characters(self.root), [])
+
+    def test_one_entry_that_cannot_be_stat_ed_is_skipped_without_losing_the_rest(self):
+        # An earlier version of this test patched is_dir unconditionally, which
+        # made the root check fail and never reached the per-entry handler at
+        # all -- coverage showed that branch had never run. Fail only for the
+        # one entry so the loop's own guard is what gets exercised.
+        cs.create_character(self.root, "Narrator", cs.MODE_ONESHOT)
+        cs.create_character(self.root, "Robot", cs.MODE_ONESHOT)
+        real_is_dir = Path.is_dir
+
+        def flaky(self_path):
+            if self_path.name == "robot":
+                raise OSError(5, "io error")
+            return real_is_dir(self_path)
+
+        with mock.patch.object(Path, "is_dir", flaky):
+            summaries = cs.list_characters(self.root)
+        self.assertEqual([s["slug"] for s in summaries], ["narrator"])
 
     def test_a_clip_file_that_cannot_be_deleted_still_leaves_the_document_correct(self):
         # The document is what matters. A file we could not unlink is untidy;
@@ -338,6 +382,57 @@ class UnreadableLibraryTests(_TempLibrary):
                 cs.add_clip(self.root, slug, self.a_clip())
         # No audio left behind that no document refers to.
         self.assertEqual(list(cs.clips_dir(self.root, slug).iterdir()), [])
+
+
+class RealAudioTests(_TempLibrary):
+    """One test against a real wav, because everything else uses 8 fake bytes.
+
+    The store never opens a clip, so the fake bytes are legitimate for the
+    rest of the suite -- but shutil.copy2 on a nearly-megabyte file is the
+    thing that actually happens in the app, and it is worth one real check.
+    """
+
+    FIXTURE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sample_prompt.wav")
+
+    @unittest.skipUnless(os.path.isfile(FIXTURE), "sample_prompt.wav not present")
+    def test_a_real_wav_is_copied_byte_for_byte_and_resolves(self):
+        slug = cs.create_character(self.root, "Narrator", cs.MODE_ONESHOT)
+        cs.add_clip(self.root, slug, self.FIXTURE, {"duration_s": 9.9})
+        stored = cs.resolve_clip_path(self.root, slug)
+        self.assertIsNotNone(stored)
+        self.assertEqual(os.path.getsize(stored), os.path.getsize(self.FIXTURE))
+
+
+class RvcModeTests(_TempLibrary):
+    """The RVC half of the schema.
+
+    Nothing in this module reads or writes rvc.* yet -- it is a shape waiting
+    for the conversion stage. These pin the shape down so that stage starts
+    from something known rather than something assumed.
+    """
+
+    def test_an_rvc_character_round_trips_its_model_paths(self):
+        slug = cs.create_character(self.root, "Robot", cs.MODE_RVC)
+        document = cs.load_character(self.root, slug)
+        document["rvc"].update({
+            "model_path": r"D:\models\robot.pth",
+            "index_path": r"D:\models\robot.index",
+            "transpose": -2,
+        })
+        cs.save_character(self.root, slug, document)
+        self.assertEqual(cs.load_character(self.root, slug)["rvc"], document["rvc"])
+
+    def test_an_rvc_character_starts_with_no_model_attached(self):
+        slug = cs.create_character(self.root, "Robot", cs.MODE_RVC)
+        rvc = cs.load_character(self.root, slug)["rvc"]
+        self.assertIsNone(rvc["model_path"])
+        self.assertIsNone(rvc["index_path"])
+
+    def test_rvc_and_oneshot_characters_coexist_and_filter_apart(self):
+        cs.create_character(self.root, "Narrator", cs.MODE_ONESHOT)
+        cs.create_character(self.root, "Robot", cs.MODE_RVC)
+        self.assertEqual([c["slug"] for c in cs.list_characters(self.root, cs.MODE_RVC)], ["robot"])
+        self.assertEqual([c["slug"] for c in cs.list_characters(self.root, cs.MODE_ONESHOT)], ["narrator"])
 
 
 class TrainingReadinessTests(_TempLibrary):
