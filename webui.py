@@ -33,22 +33,17 @@ sys.path.append(os.path.join(current_dir, "indextts"))
 import engine_paths
 import engine_worker
 
-import argparse
-parser = argparse.ArgumentParser(
-    description="IndexTTS WebUI",
-    formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+from webui_runtime import (
+    DEVICE_AUTO,
+    DEVICE_AUTO_LABEL,
+    DEVICE_CPU,
+    DEVICE_CPU_LABEL,
+    DeviceSelection,
+    _build_tts_runtime_options,
+    cmd_args,
+    selected_device,
 )
-parser.add_argument("--verbose", action="store_true", default=False, help="Enable verbose mode")
-parser.add_argument("--port", type=int, default=7860, help="Port to run the web UI on")
-parser.add_argument("--host", type=str, default="0.0.0.0", help="Host to run the web UI on")
-parser.add_argument("--model_dir", type=str, default=engine_paths.ENGINE_CHECKPOINTS,
-                    help="IndexTTS-2.5 checkpoints directory")
-parser.add_argument("--fp16", action="store_true", default=False, help="Use FP16 for inference if available")
-parser.add_argument("--deepspeed", action="store_true", default=False, help="Use DeepSpeed to accelerate if available")
-parser.add_argument("--cuda_kernel", action="store_true", default=False, help="Use CUDA kernel for inference if available")
-parser.add_argument("--gui_seg_tokens", type=int, default=80, help="GUI: Max tokens per generation segment")
-parser.add_argument("--share", action="store_true", default=False, help="Enable Gradio live sharing to create a public link")
-cmd_args = parser.parse_args()
+
 
 if not os.path.exists(cmd_args.model_dir):
     print(f"Model directory {cmd_args.model_dir} does not exist. Please download the model first.")
@@ -150,53 +145,6 @@ from webui_preset_store import (
 
 
 
-DEVICE_CPU = "cpu"
-DEVICE_CPU_LABEL = "CPU (slow, always available)"
-DEVICE_AUTO = "auto"
-DEVICE_AUTO_LABEL = "Auto (first CUDA device)"
-
-
-class DeviceSelection:
-    """Holds the device the next model load should use.
-
-    The model loads in the generation subprocess, so the choice cannot be
-    passed down the call stack; it is read back out here when the request is
-    built. Guarded by a lock because the UI thread writes it while a generation
-    thread may be reading it.
-    """
-
-    def __init__(self, initial=DEVICE_AUTO):
-        self._value = initial
-        self._lock = threading.Lock()
-
-    def get(self):
-        with self._lock:
-            return self._value
-
-    def set(self, value):
-        """Store `value`; returns True when it actually changed."""
-        with self._lock:
-            if value == self._value:
-                return False
-            self._value = value
-            return True
-
-
-selected_device = DeviceSelection()
-
-
-def _build_tts_runtime_options():
-    # "auto" means leave device unset so IndexTTS2 picks it the way it always
-    # has; anything else is an explicit user choice from the device dropdown.
-    device = selected_device.get()
-    return {
-        "model_dir": cmd_args.model_dir,
-        "cfg_path": os.path.join(cmd_args.model_dir, "config.yaml"),
-        "use_fp16": bool(cmd_args.fp16),
-        "use_deepspeed": bool(cmd_args.deepspeed),
-        "use_cuda_kernel": bool(cmd_args.cuda_kernel),
-        "device": None if device == DEVICE_AUTO else device,
-    }
 
 
 PREVIEW_CFG = OmegaConf.load(os.path.join(cmd_args.model_dir, "config.yaml"))
