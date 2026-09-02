@@ -161,6 +161,19 @@ from webui_generation import (
     resolve_optional_image_path,
 )
 from webui_handlers import (
+    apply_tone_preset_ui,
+    apply_voice_shaping_ui,
+    clear_reference_audio,
+    extract_audio_segments,
+    load_audio_from_path_ui,
+    load_subtitle_file,
+    on_method_change,
+    on_segmentation_inputs_change,
+    process_media_to_reference,
+    process_media_upload,
+    reset_voice_shaping_ui,
+    send_cleaned_to_reference,
+    send_fetched_to_reference,
     CLEANUP_DEVICE_CHOICES,
     CLEANUP_LOG_LINES,
     CLEANUP_PROGRESS_IDLE,
@@ -197,6 +210,16 @@ from webui_handlers import (
     on_media_fetch_quality_change,
     unload_engine_worker,
     update_prompt_audio,
+)
+from webui_preset_normalize import (
+    _build_subtitle_status_for_preset,
+    _component_output_value,
+    _normalize_bool,
+    _normalize_emotion_method,
+    _normalize_field_value,
+    _normalize_float,
+    _normalize_int,
+    _normalize_text,
 )
 
 
@@ -1028,80 +1051,6 @@ with gr.Blocks(title=APP_TITLE) as demo:
 
             return merged
 
-        def _normalize_bool(value: Any, default: bool) -> bool:
-            if isinstance(value, bool):
-                return value
-            if value is None:
-                return bool(default)
-            if isinstance(value, (int, float)):
-                return bool(value)
-            if isinstance(value, str):
-                normalized = value.strip().lower()
-                if normalized in {"1", "true", "yes", "y", "on"}:
-                    return True
-                if normalized in {"0", "false", "no", "n", "off", ""}:
-                    return False
-            return bool(default)
-
-        def _normalize_int(value: Any, default: int, min_value: Optional[int] = None, max_value: Optional[int] = None) -> int:
-            try:
-                normalized = int(float(value))
-            except Exception:
-                normalized = int(default)
-            if min_value is not None:
-                normalized = max(min_value, normalized)
-            if max_value is not None:
-                normalized = min(max_value, normalized)
-            return normalized
-
-        def _normalize_float(value: Any, default: float, min_value: Optional[float] = None, max_value: Optional[float] = None) -> float:
-            try:
-                normalized = float(value)
-            except Exception:
-                normalized = float(default)
-            if min_value is not None:
-                normalized = max(min_value, normalized)
-            if max_value is not None:
-                normalized = min(max_value, normalized)
-            return normalized
-
-        def _normalize_text(value: Any, default: str) -> str:
-            if value is None:
-                return str(default)
-            return str(value)
-
-        def _normalize_emotion_method(value: Any, default: int = 0) -> int:
-            if hasattr(value, "value"):
-                value = value.value
-            if isinstance(value, str):
-                stripped = value.strip()
-                if stripped in EMO_CHOICES_ALL:
-                    return EMO_CHOICES_ALL.index(stripped)
-            normalized = _normalize_int(value, default, 0, len(EMO_CHOICES_ALL) - 1)
-            return normalized
-
-        def _normalize_field_value(field: Dict[str, Any], value: Any) -> Any:
-            kind = field["kind"]
-            default = field["default"]
-            min_value = field.get("min")
-            max_value = field.get("max")
-
-            if kind == "str":
-                return _normalize_text(value, default)
-            if kind == "bool":
-                return _normalize_bool(value, default)
-            if kind == "int":
-                return _normalize_int(value, default, min_value, max_value)
-            if kind == "float":
-                return _normalize_float(value, default, min_value, max_value)
-            if kind == "int_text":
-                return str(_normalize_int(value, int(default), min_value, max_value))
-            if kind == "choice":
-                normalized = _normalize_text(value, default)
-                return normalized if normalized in field.get("choices", []) else default
-            if kind == "emotion_method":
-                return _normalize_emotion_method(value, default)
-            return value if value is not None else default
 
         def _normalize_ui_config(cfg: Optional[Dict[str, Any]]) -> Dict[str, Any]:
             merged = _merge_ui_config(cfg)
@@ -1121,23 +1070,7 @@ with gr.Blocks(title=APP_TITLE) as demo:
             normalized = _normalize_ui_config(cfg)
             return [normalized[field["section"]][field["key"]] for field in _CONFIG_FIELDS]
 
-        def _component_output_value(field: Dict[str, Any], value: Any) -> Any:
-            if field["kind"] == "emotion_method":
-                index_value = _normalize_emotion_method(value, field["default"])
-                return EMO_CHOICES_ALL[index_value]
-            return value
 
-        def _build_subtitle_status_for_preset(subtitle_mode_value: bool, current_subtitle_file: Optional[str]):
-            if not subtitle_mode_value or not current_subtitle_file:
-                return gr.update(value="", visible=False)
-            try:
-                cues = parse_subtitle_file(current_subtitle_file)
-                return gr.update(
-                    value=build_subtitle_status_message(cues, subtitle_file=current_subtitle_file),
-                    visible=True,
-                )
-            except Exception as e:
-                return gr.update(value=f"Failed to load caption file: {str(e)}", visible=True)
 
         def _preset_component_updates(
             cfg: Optional[Dict[str, Any]],
@@ -1513,164 +1446,13 @@ with gr.Blocks(title=APP_TITLE) as demo:
                     max_lines=CLEANUP_LOG_LINES,
                 )
 
-    def process_media_to_reference(media_path, time_ranges="", require_time_ranges=False):
-        if not media_path:
-            if require_time_ranges:
-                return None, "Upload an audio or video file first."
-            return None, ""
 
-        try:
-            temp_audio = tempfile.mktemp(suffix=".wav")
-            extracted_audio = extract_audio_from_media(media_path, temp_audio)
-            if not extracted_audio:
-                return None, f"Failed to read audio from {os.path.basename(media_path)}."
 
-            has_ranges = bool(time_ranges and time_ranges.strip())
-            if has_ranges:
-                segments_audio = extract_time_ranges(extracted_audio, time_ranges)
-                if segments_audio:
-                    if os.path.exists(extracted_audio):
-                        os.remove(extracted_audio)
-                    extracted_audio = segments_audio
-                    return (
-                        extracted_audio,
-                        f"Loaded extracted reference audio from {os.path.basename(media_path)} using ranges: {time_ranges.strip()}."
-                    )
-                if os.path.exists(extracted_audio):
-                    os.remove(extracted_audio)
-                return None, "No valid time ranges were found. Use a format like 1:3; 3:7; 11:15."
 
-            if require_time_ranges:
-                if os.path.exists(extracted_audio):
-                    os.remove(extracted_audio)
-                return None, "Enter time ranges like 1:3; 3:7 before extracting segments."
 
-            return extracted_audio, f"Loaded reference audio from {os.path.basename(media_path)}."
-        except Exception as e:
-            print(f"Error processing media: {e}")
-            return None, f"Error while processing media: {str(e)}"
 
-    def process_media_upload(media_file, time_ranges):
-        """Process uploaded media file and extract audio."""
-        extracted_audio, status = process_media_to_reference(media_file, time_ranges, require_time_ranges=False)
-        if not extracted_audio:
-            if not status:
-                return gr.update(), gr.update(value="", visible=False)
-            return gr.update(), gr.update(value=status, visible=True)
-        return gr.update(value=extracted_audio), gr.update(value=status, visible=True)
 
-    def extract_audio_segments(media_file, time_ranges):
-        """Extract specific time segments from uploaded media."""
-        extracted_audio, status = process_media_to_reference(media_file, time_ranges, require_time_ranges=True)
-        if not extracted_audio:
-            return gr.update(), gr.update(value=status, visible=True)
-        return gr.update(value=extracted_audio), gr.update(value=status, visible=True)
 
-    def clear_reference_audio():
-        """Clear the merged reference-media inputs."""
-        return (
-            gr.update(value=None),
-            gr.update(value=None),
-            gr.update(value=""),
-            gr.update(value="", visible=False),
-        )
-
-    def load_audio_from_path_ui(audio_path, time_ranges):
-        """Load audio from the specified file path."""
-        if not audio_path:
-            return gr.update(), gr.update(value="Please enter a file path", visible=True)
-
-        audio_path = audio_path.strip()
-        if not os.path.exists(audio_path):
-            return gr.update(), gr.update(value=f"File not found: {audio_path}", visible=True)
-
-        extracted_audio, status = process_media_to_reference(audio_path, time_ranges, require_time_ranges=False)
-        if extracted_audio:
-            return gr.update(value=extracted_audio), gr.update(value=status, visible=True)
-        return gr.update(), gr.update(value=status or "Failed to load audio file", visible=True)
-
-    def load_subtitle_file(subtitle_file_path, current_text, subtitle_mode, max_text_tokens_per_segment):
-        if not subtitle_file_path:
-            preview_rows = get_preview_rows(current_text, max_text_tokens_per_segment, False, None)
-            section_count = build_section_count_message(current_text, max_text_tokens_per_segment, False, None)
-            return (
-                current_text,
-                gr.update(value=False),
-                gr.update(value="", visible=False),
-                gr.update(value=preview_rows, visible=True, type="array"),
-                gr.update(value=section_count),
-            )
-
-        try:
-            cues = parse_subtitle_file(subtitle_file_path)
-            subtitle_text = subtitle_cues_to_text(cues)
-            use_subtitle_timing = bool(subtitle_mode)
-            preview_rows = get_preview_rows(
-                subtitle_text,
-                max_text_tokens_per_segment,
-                use_subtitle_timing,
-                subtitle_file_path,
-            )
-            section_count = build_section_count_message(
-                subtitle_text,
-                max_text_tokens_per_segment,
-                use_subtitle_timing,
-                subtitle_file_path,
-            )
-            return (
-                subtitle_text,
-                gr.update(value=use_subtitle_timing),
-                gr.update(value=build_subtitle_status_message(cues, subtitle_file=subtitle_file_path), visible=True),
-                gr.update(value=preview_rows, visible=True, type="array"),
-                gr.update(value=section_count),
-            )
-        except Exception as e:
-            preview_rows = [[0, "Caption Error", str(e), ""]]
-            return (
-                current_text,
-                gr.update(value=False),
-                gr.update(value=f"Failed to load caption file: {str(e)}", visible=True),
-                gr.update(value=preview_rows, visible=True, type="array"),
-                gr.update(value=f"**Current Sections:** Unable to read subtitle file: {html.escape(str(e))}"),
-            )
-
-    def on_segmentation_inputs_change(text, max_text_tokens_per_segment, subtitle_mode, subtitle_file_path):
-        data = get_preview_rows(text, max_text_tokens_per_segment, subtitle_mode, subtitle_file_path)
-        section_count = build_section_count_message(text, max_text_tokens_per_segment, subtitle_mode, subtitle_file_path)
-        return (
-            gr.update(value=data, visible=True, type="array"),
-            gr.update(value=section_count),
-        )
-
-    def on_method_change(emo_control_method):
-        if emo_control_method == 1:  # emotion reference audio
-            return (gr.update(visible=True),
-                    gr.update(visible=False),
-                    gr.update(visible=False),
-                    gr.update(visible=False),
-                    gr.update(visible=True)
-                    )
-        elif emo_control_method == 2:  # emotion vectors
-            return (gr.update(visible=False),
-                    gr.update(visible=True),
-                    gr.update(visible=True),
-                    gr.update(visible=False),
-                    gr.update(visible=True)
-                    )
-        elif emo_control_method == 3:  # emotion text description
-            return (gr.update(visible=False),
-                    gr.update(visible=True),
-                    gr.update(visible=False),
-                    gr.update(visible=True),
-                    gr.update(visible=True)
-                    )
-        else:  # 0: same as speaker voice
-            return (gr.update(visible=False),
-                    gr.update(visible=False),
-                    gr.update(visible=False),
-                    gr.update(visible=False),
-                    gr.update(visible=False)
-                    )
 
     emo_control_method.change(on_method_change,
         inputs=[emo_control_method],
@@ -1820,20 +1602,6 @@ with gr.Blocks(title=APP_TITLE) as demo:
     # Media Fetch tab -- event wiring
     # ----------------------------------------------------------------------
 
-    def send_fetched_to_reference(fetched_path):
-        """Load the freshly extracted audio into the reference voice slot."""
-        if not fetched_path:
-            return (
-                gr.update(),
-                gr.update(value="Download and extract an audio file first.", visible=True),
-            )
-        extracted_audio, status = process_media_to_reference(fetched_path)
-        if not extracted_audio:
-            return (
-                gr.update(),
-                gr.update(value=status or "Could not load that file.", visible=True),
-            )
-        return gr.update(value=extracted_audio), gr.update(value=status, visible=True)
 
     mf_quality.change(
         on_media_fetch_quality_change,
@@ -1931,21 +1699,6 @@ with gr.Blocks(title=APP_TITLE) as demo:
         show_progress="minimal",
     )
 
-    def send_cleaned_to_reference(cleaned_path):
-        """Hand the cleaned file to the generation tab's reference voice box."""
-        if not cleaned_path:
-            return (
-                gr.update(),
-                gr.update(value="Clean up an audio file first.", visible=True),
-            )
-        reference_audio, status = process_media_to_reference(cleaned_path)
-        if not reference_audio:
-            return (
-                gr.update(),
-                gr.update(value=status or "Could not load the cleaned file.",
-                          visible=True),
-            )
-        return gr.update(value=reference_audio), gr.update(value=status, visible=True)
 
     cl_send_btn.click(
         send_cleaned_to_reference,
@@ -1972,28 +1725,6 @@ with gr.Blocks(title=APP_TITLE) as demo:
         emo_weight_group,
     ]
 
-    def apply_tone_preset_ui(preset_name):
-        """Fill the emotion-description box and switch to text-description mode.
-
-        That field is only read in mode 3, so selecting a tone has to move the
-        radio as well or the description is silently ignored.
-        """
-        description = tone_presets.tone_description(preset_name)
-        # The preset seeds the Speed control; the control stays the value the
-        # engine is given, so a later drag always wins over the preset.
-        speed = gr.update(value=tone_presets.tone_speed(preset_name))
-        if not description:
-            # "None" clears the box but leaves the radio and the visible groups
-            # alone, so picking it does not yank the user out of the mode they
-            # were already working in.
-            return (gr.update(value=""), gr.update(), speed) + tuple(
-                gr.update() for _ in range(EMOTION_GROUP_COUNT)
-            )
-        return (
-            gr.update(value=description),
-            gr.update(value=EMO_CHOICES_ALL[EMOTION_TEXT_MODE_INDEX]),
-            speed,
-        ) + on_method_change(EMOTION_TEXT_MODE_INDEX)
 
     tone_preset.change(
         apply_tone_preset_ui,
@@ -2003,35 +1734,7 @@ with gr.Blocks(title=APP_TITLE) as demo:
         show_progress="hidden",
     )
 
-    def apply_voice_shaping_ui(audio_path, speed, semitones):
-        """Reshape the generated clip in place in the player."""
-        try:
-            shaped = voice_shaping.shape_audio(
-                audio_path,
-                speed=speed,
-                semitones=semitones,
-                output_dir=os.path.join(MEDIA_FETCH_OUTPUT_ROOT, voice_shaping.SHAPED_SUBDIR),
-            )
-        except voice_shaping.VoiceShapingError as exc:
-            return gr.update(), gr.update(value=f"WARNING: {exc}", visible=True)
 
-        if shaped == audio_path:
-            return gr.update(), gr.update(
-                value=voice_shaping.describe_shaping(speed, semitones), visible=True
-            )
-        summary = voice_shaping.describe_shaping(speed, semitones)
-        return (
-            gr.update(value=shaped),
-            gr.update(value=f"Applied {summary}.", visible=True),
-        )
-
-    def reset_voice_shaping_ui():
-        """Send both sliders back to their neutral values."""
-        return (
-            gr.update(value=voice_shaping.SPEED_DEFAULT),
-            gr.update(value=voice_shaping.PITCH_DEFAULT_SEMITONES),
-            gr.update(value="Speed and pitch reset.", visible=True),
-        )
 
     shaping_apply_btn.click(
         apply_voice_shaping_ui,

@@ -29,6 +29,16 @@ import audio_cleanup_shared as cleanup_shared
 import engine_worker
 import webui_audio_cleanup as audio_cleanup
 import webui_media_fetch as media_fetch
+import html
+import tempfile
+
+import webui_tone_presets as tone_presets
+import webui_voice_shaping as voice_shaping
+from subtitle_utils import parse_subtitle_file, subtitle_cues_to_text
+from webui_generation import build_subtitle_status_message
+from webui_media_utils import extract_audio_from_media, extract_time_ranges
+from webui_preview import build_section_count_message, get_preview_rows
+from webui_runtime import EMO_CHOICES_ALL
 from webui_progress import render_progress_bar
 from webui_runtime import (
     DEVICE_AUTO,
@@ -544,4 +554,252 @@ def cleanup_run_ui(
         gr.update(value=audio_path),
         gr.update(value=notes),
         gr.update(value="\n".join(lines[-CLEANUP_LOG_LINES:])),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Audio Generation tab: getting a reference voice in, and steering delivery.
+# ---------------------------------------------------------------------------
+
+def process_media_to_reference(media_path, time_ranges="", require_time_ranges=False):
+    if not media_path:
+        if require_time_ranges:
+            return None, "Upload an audio or video file first."
+        return None, ""
+
+    try:
+        temp_audio = tempfile.mktemp(suffix=".wav")
+        extracted_audio = extract_audio_from_media(media_path, temp_audio)
+        if not extracted_audio:
+            return None, f"Failed to read audio from {os.path.basename(media_path)}."
+
+        has_ranges = bool(time_ranges and time_ranges.strip())
+        if has_ranges:
+            segments_audio = extract_time_ranges(extracted_audio, time_ranges)
+            if segments_audio:
+                if os.path.exists(extracted_audio):
+                    os.remove(extracted_audio)
+                extracted_audio = segments_audio
+                return (
+                    extracted_audio,
+                    f"Loaded extracted reference audio from {os.path.basename(media_path)} using ranges: {time_ranges.strip()}."
+                )
+            if os.path.exists(extracted_audio):
+                os.remove(extracted_audio)
+            return None, "No valid time ranges were found. Use a format like 1:3; 3:7; 11:15."
+
+        if require_time_ranges:
+            if os.path.exists(extracted_audio):
+                os.remove(extracted_audio)
+            return None, "Enter time ranges like 1:3; 3:7 before extracting segments."
+
+        return extracted_audio, f"Loaded reference audio from {os.path.basename(media_path)}."
+    except Exception as e:
+        print(f"Error processing media: {e}")
+        return None, f"Error while processing media: {str(e)}"
+
+def process_media_upload(media_file, time_ranges):
+    """Process uploaded media file and extract audio."""
+    extracted_audio, status = process_media_to_reference(media_file, time_ranges, require_time_ranges=False)
+    if not extracted_audio:
+        if not status:
+            return gr.update(), gr.update(value="", visible=False)
+        return gr.update(), gr.update(value=status, visible=True)
+    return gr.update(value=extracted_audio), gr.update(value=status, visible=True)
+
+def extract_audio_segments(media_file, time_ranges):
+    """Extract specific time segments from uploaded media."""
+    extracted_audio, status = process_media_to_reference(media_file, time_ranges, require_time_ranges=True)
+    if not extracted_audio:
+        return gr.update(), gr.update(value=status, visible=True)
+    return gr.update(value=extracted_audio), gr.update(value=status, visible=True)
+
+def clear_reference_audio():
+    """Clear the merged reference-media inputs."""
+    return (
+        gr.update(value=None),
+        gr.update(value=None),
+        gr.update(value=""),
+        gr.update(value="", visible=False),
+    )
+
+def load_audio_from_path_ui(audio_path, time_ranges):
+    """Load audio from the specified file path."""
+    if not audio_path:
+        return gr.update(), gr.update(value="Please enter a file path", visible=True)
+
+    audio_path = audio_path.strip()
+    if not os.path.exists(audio_path):
+        return gr.update(), gr.update(value=f"File not found: {audio_path}", visible=True)
+
+    extracted_audio, status = process_media_to_reference(audio_path, time_ranges, require_time_ranges=False)
+    if extracted_audio:
+        return gr.update(value=extracted_audio), gr.update(value=status, visible=True)
+    return gr.update(), gr.update(value=status or "Failed to load audio file", visible=True)
+
+def load_subtitle_file(subtitle_file_path, current_text, subtitle_mode, max_text_tokens_per_segment):
+    if not subtitle_file_path:
+        preview_rows = get_preview_rows(current_text, max_text_tokens_per_segment, False, None)
+        section_count = build_section_count_message(current_text, max_text_tokens_per_segment, False, None)
+        return (
+            current_text,
+            gr.update(value=False),
+            gr.update(value="", visible=False),
+            gr.update(value=preview_rows, visible=True, type="array"),
+            gr.update(value=section_count),
+        )
+
+    try:
+        cues = parse_subtitle_file(subtitle_file_path)
+        subtitle_text = subtitle_cues_to_text(cues)
+        use_subtitle_timing = bool(subtitle_mode)
+        preview_rows = get_preview_rows(
+            subtitle_text,
+            max_text_tokens_per_segment,
+            use_subtitle_timing,
+            subtitle_file_path,
+        )
+        section_count = build_section_count_message(
+            subtitle_text,
+            max_text_tokens_per_segment,
+            use_subtitle_timing,
+            subtitle_file_path,
+        )
+        return (
+            subtitle_text,
+            gr.update(value=use_subtitle_timing),
+            gr.update(value=build_subtitle_status_message(cues, subtitle_file=subtitle_file_path), visible=True),
+            gr.update(value=preview_rows, visible=True, type="array"),
+            gr.update(value=section_count),
+        )
+    except Exception as e:
+        preview_rows = [[0, "Caption Error", str(e), ""]]
+        return (
+            current_text,
+            gr.update(value=False),
+            gr.update(value=f"Failed to load caption file: {str(e)}", visible=True),
+            gr.update(value=preview_rows, visible=True, type="array"),
+            gr.update(value=f"**Current Sections:** Unable to read subtitle file: {html.escape(str(e))}"),
+        )
+
+def on_segmentation_inputs_change(text, max_text_tokens_per_segment, subtitle_mode, subtitle_file_path):
+    data = get_preview_rows(text, max_text_tokens_per_segment, subtitle_mode, subtitle_file_path)
+    section_count = build_section_count_message(text, max_text_tokens_per_segment, subtitle_mode, subtitle_file_path)
+    return (
+        gr.update(value=data, visible=True, type="array"),
+        gr.update(value=section_count),
+    )
+
+def on_method_change(emo_control_method):
+    if emo_control_method == 1:  # emotion reference audio
+        return (gr.update(visible=True),
+                gr.update(visible=False),
+                gr.update(visible=False),
+                gr.update(visible=False),
+                gr.update(visible=True)
+                )
+    elif emo_control_method == 2:  # emotion vectors
+        return (gr.update(visible=False),
+                gr.update(visible=True),
+                gr.update(visible=True),
+                gr.update(visible=False),
+                gr.update(visible=True)
+                )
+    elif emo_control_method == 3:  # emotion text description
+        return (gr.update(visible=False),
+                gr.update(visible=True),
+                gr.update(visible=False),
+                gr.update(visible=True),
+                gr.update(visible=True)
+                )
+    else:  # 0: same as speaker voice
+        return (gr.update(visible=False),
+                gr.update(visible=False),
+                gr.update(visible=False),
+                gr.update(visible=False),
+                gr.update(visible=False)
+                )
+
+def send_fetched_to_reference(fetched_path):
+    """Load the freshly extracted audio into the reference voice slot."""
+    if not fetched_path:
+        return (
+            gr.update(),
+            gr.update(value="Download and extract an audio file first.", visible=True),
+        )
+    extracted_audio, status = process_media_to_reference(fetched_path)
+    if not extracted_audio:
+        return (
+            gr.update(),
+            gr.update(value=status or "Could not load that file.", visible=True),
+        )
+    return gr.update(value=extracted_audio), gr.update(value=status, visible=True)
+
+def send_cleaned_to_reference(cleaned_path):
+    """Hand the cleaned file to the generation tab's reference voice box."""
+    if not cleaned_path:
+        return (
+            gr.update(),
+            gr.update(value="Clean up an audio file first.", visible=True),
+        )
+    reference_audio, status = process_media_to_reference(cleaned_path)
+    if not reference_audio:
+        return (
+            gr.update(),
+            gr.update(value=status or "Could not load the cleaned file.",
+                      visible=True),
+        )
+    return gr.update(value=reference_audio), gr.update(value=status, visible=True)
+
+def apply_tone_preset_ui(preset_name):
+    """Fill the emotion-description box and switch to text-description mode.
+
+    That field is only read in mode 3, so selecting a tone has to move the
+    radio as well or the description is silently ignored.
+    """
+    description = tone_presets.tone_description(preset_name)
+    # The preset seeds the Speed control; the control stays the value the
+    # engine is given, so a later drag always wins over the preset.
+    speed = gr.update(value=tone_presets.tone_speed(preset_name))
+    if not description:
+        # "None" clears the box but leaves the radio and the visible groups
+        # alone, so picking it does not yank the user out of the mode they
+        # were already working in.
+        return (gr.update(value=""), gr.update(), speed) + tuple(
+            gr.update() for _ in range(EMOTION_GROUP_COUNT)
+        )
+    return (
+        gr.update(value=description),
+        gr.update(value=EMO_CHOICES_ALL[EMOTION_TEXT_MODE_INDEX]),
+        speed,
+    ) + on_method_change(EMOTION_TEXT_MODE_INDEX)
+
+def apply_voice_shaping_ui(audio_path, speed, semitones):
+    """Reshape the generated clip in place in the player."""
+    try:
+        shaped = voice_shaping.shape_audio(
+            audio_path,
+            speed=speed,
+            semitones=semitones,
+            output_dir=os.path.join(MEDIA_FETCH_OUTPUT_ROOT, voice_shaping.SHAPED_SUBDIR),
+        )
+    except voice_shaping.VoiceShapingError as exc:
+        return gr.update(), gr.update(value=f"WARNING: {exc}", visible=True)
+
+    if shaped == audio_path:
+        return gr.update(), gr.update(
+            value=voice_shaping.describe_shaping(speed, semitones), visible=True
+        )
+    summary = voice_shaping.describe_shaping(speed, semitones)
+    return (
+        gr.update(value=shaped),
+        gr.update(value=f"Applied {summary}.", visible=True),
+    )
+
+def reset_voice_shaping_ui():
+    """Send both sliders back to their neutral values."""
+    return (
+        gr.update(value=voice_shaping.SPEED_DEFAULT),
+        gr.update(value=voice_shaping.PITCH_DEFAULT_SEMITONES),
+        gr.update(value="Speed and pitch reset.", visible=True),
     )
