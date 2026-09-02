@@ -150,7 +150,19 @@ def list_characters(root: str, mode: Optional[str] = None) -> List[Dict[str, Any
         except OSError as exc:
             print(f"Character library: cannot stat {entry} ({exc}); skipping it.", flush=True)
             continue
-        document = _read_character_file(entry / CHARACTER_FILE)
+        character_file = entry / CHARACTER_FILE
+        try:
+            has_character_file = character_file.is_file()
+        except OSError:
+            has_character_file = False
+        if not has_character_file:
+            # A directory with no character.json is not a damaged character,
+            # it is not a character at all -- scratch folders, an editor's
+            # dotfile directory, whatever else lives beside the library.
+            # Listing those as "unreadable" fills the dropdown with noise.
+            continue
+
+        document = _read_character_file(character_file)
         if document is None:
             summaries.append({
                 "slug": entry.name,

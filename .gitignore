@@ -154,6 +154,10 @@ gradio/
 # Saved UI presets are per-machine.
 presets/
 
+# The character library: named voices and their reference audio. Per-machine,
+# and it holds recordings of real people -- never commit it.
+characters/
+
 # Local fixtures for tools/run_pipeline_regression.py. NOTE: the harness
 # needs both and neither is in the repo, so a fresh clone cannot run it.
 demo_voice_for_test.mp3

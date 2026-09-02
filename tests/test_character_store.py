@@ -117,6 +117,28 @@ class ListingTests(_TempLibrary):
         self.assertEqual(len(summaries), 3)
         self.assertTrue(any(s["unreadable"] for s in summaries))
 
+    def test_a_stray_directory_in_the_library_root_is_not_listed_as_a_voice(self):
+        # Found while writing the panel tests: a scratch folder beside the
+        # library was appearing in the dropdown as an unreadable voice. A
+        # directory with no character.json is not a damaged character, it is
+        # not a character.
+        (Path(self.root) / "_incoming").mkdir()
+        (Path(self.root) / "_incoming" / "clip.wav").write_bytes(b"RIFFfake")
+        self.assertEqual(len(cs.list_characters(self.root)), 2)
+
+    def test_an_entry_whose_character_file_cannot_be_stat_ed_is_skipped(self):
+        # The is_file() probe itself can fail on a disconnected drive.
+        cs.create_character(self.root, 'Third', cs.MODE_ONESHOT)
+        real = Path.is_file
+        def flaky(self_path):
+            if self_path.parent.name == 'third':
+                raise OSError(5, 'io error')
+            return real(self_path)
+        with mock.patch.object(Path, 'is_file', flaky):
+            slugs = [c['slug'] for c in cs.list_characters(self.root)]
+        self.assertNotIn('third', slugs)
+        self.assertEqual(len(slugs), 2)
+
     def test_a_stray_file_in_the_library_root_is_ignored(self):
         (Path(self.root) / "notes.txt").write_text("hello", encoding="utf-8")
         self.assertEqual(len(cs.list_characters(self.root)), 2)

@@ -103,6 +103,7 @@ import webui_audio_cleanup as audio_cleanup
 import audio_cleanup_shared as cleanup_shared
 import webui_voice_shaping as voice_shaping
 import webui_tone_presets as tone_presets
+import webui_character_handlers as character_handlers
 from webui_assets import (
     APP_ASSETS_DIR,
     APP_CSS,
@@ -328,6 +329,53 @@ with gr.Blocks(title=APP_TITLE) as demo:
                         interactive=False,
                         visible=False
                     )
+
+                    gr.Markdown("#### Character Library", elem_classes="reference-subsection-title")
+                    with gr.Group(elem_classes="reference-subsection"):
+                        _char_mode0, _char_choices0, _char_first0, _char_name0, _char_desc0 = (
+                            character_handlers.initial_state()
+                        )
+                        character_mode = gr.Dropdown(
+                            label="Voice type",
+                            choices=character_handlers.mode_choices(),
+                            value=_char_mode0,
+                            interactive=True,
+                            info="One-shot voices hold reference clips. RVC voices hold a trained model.",
+                        )
+                        character_select = gr.Dropdown(
+                            label="Voice",
+                            choices=_char_choices0,
+                            value=_char_first0,
+                            interactive=True,
+                        )
+                        character_summary = gr.Markdown(value=_char_desc0)
+                        character_name = gr.Textbox(
+                            label="Name",
+                            value=_char_name0,
+                            placeholder="Name a new voice, or rename the selected one",
+                        )
+                        with gr.Row():
+                            character_new_btn = gr.Button("New", variant="secondary",
+                                                          elem_classes=["action-button"])
+                            character_rename_btn = gr.Button("Rename", variant="secondary",
+                                                             elem_classes=["action-button"])
+                            character_delete_btn = gr.Button("Delete", variant="stop",
+                                                             elem_classes=["action-button"])
+                        with gr.Row():
+                            character_use_btn = gr.Button("Use This Voice", variant="primary",
+                                                          elem_classes=["action-button"])
+                            character_add_btn = gr.Button("Add Current Reference", variant="secondary",
+                                                          elem_classes=["action-button"])
+                        # Deleting a library entry is not undoable, so the button
+                        # arms on the first press the same way cancel does.
+                        character_delete_confirm = gr.Checkbox(
+                            label="Confirm delete", value=False, visible=True,
+                            info="Tick this, then press Delete.",
+                        )
+                        character_status = gr.Textbox(
+                            label="Character Library Status",
+                            value="", interactive=False, visible=False,
+                        )
 
                 prompt_list = os.listdir("prompts")
                 default = ''
@@ -1780,6 +1828,62 @@ with gr.Blocks(title=APP_TITLE) as demo:
         queue=False,
         show_progress="hidden",
     )
+    # -- Character library ---------------------------------------------------
+    # Every mutating button returns the same four outputs: the voice list, the
+    # name box, the summary and the status line. Keeping one shape means the
+    # panel can never end up showing a name from one voice and clips from
+    # another.
+    character_mode.change(
+        character_handlers.on_mode_change,
+        inputs=[character_mode],
+        outputs=[character_select, character_name, character_summary, character_status],
+        queue=False,
+        show_progress="hidden",
+    )
+
+    character_select.change(
+        character_handlers.on_character_change,
+        inputs=[character_mode, character_select],
+        outputs=[character_name, character_summary, character_status],
+        queue=False,
+        show_progress="hidden",
+    )
+
+    character_new_btn.click(
+        character_handlers.create_character_ui,
+        inputs=[character_mode, character_name],
+        outputs=[character_select, character_name, character_summary, character_status],
+        queue=False,
+    )
+
+    character_rename_btn.click(
+        character_handlers.rename_character_ui,
+        inputs=[character_mode, character_select, character_name],
+        outputs=[character_select, character_name, character_summary, character_status],
+        queue=False,
+    )
+
+    character_delete_btn.click(
+        character_handlers.delete_character_ui,
+        inputs=[character_mode, character_select, character_delete_confirm],
+        outputs=[character_select, character_name, character_summary, character_status],
+        queue=False,
+    )
+
+    character_use_btn.click(
+        character_handlers.use_character_ui,
+        inputs=[character_mode, character_select],
+        outputs=[prompt_audio, reference_status],
+        queue=False,
+    )
+
+    character_add_btn.click(
+        character_handlers.add_reference_to_character_ui,
+        inputs=[character_mode, character_select, prompt_audio],
+        outputs=[character_select, character_name, character_summary, character_status],
+        queue=False,
+    )
+
 
 if __name__ == "__main__":
     demo.queue(20)
