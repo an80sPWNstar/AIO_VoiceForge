@@ -363,7 +363,12 @@ def _prepare_generation_request(
     subtitle_extension = get_subtitle_extension(subtitle_file) if subtitle_mode else None
     source_image_path = resolve_optional_image_path(image_input)
     task_layout = create_task_output_layout(
-        output_root="outputs",
+        # Absolute, because every path derived from this root is written by
+        # THIS process and read back by the engine subprocess, which runs a
+        # different interpreter and does not reliably inherit this working
+        # directory. A relative root works only while both happen to sit in
+        # the app folder, which nothing enforces.
+        output_root=os.path.abspath("outputs"),
         filename=output_filename,
         subtitle_mode=subtitle_mode,
         subtitle_extension=subtitle_extension,

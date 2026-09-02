@@ -259,5 +259,34 @@ class MediaUtilsTests(unittest.TestCase):
             self.assertNotIsInstance(exc, NameError)
 
 
+class TaskLayoutTests(unittest.TestCase):
+    """Paths that cross the process boundary must not depend on a cwd.
+
+    The engine runs in a subprocess under a different interpreter, and the
+    working directory does not reliably survive that. A generation failed
+    with FileNotFoundError on 'outputs\0001\metadata.json' even though the
+    parent had written exactly that file -- the child simply resolved the
+    same relative path somewhere else.
+    """
+
+    def test_the_task_layout_is_absolute(self):
+        import task_output_utils as tasks
+        with tempfile.TemporaryDirectory() as directory:
+            layout = tasks.create_task_output_layout(
+                output_root=os.path.join(directory, "outputs"))
+            for key in ("task_folder", "metadata_path", "final_wav_path",
+                        "speaker_reference_copy_path"):
+                self.assertTrue(os.path.isabs(layout[key]), f"{key} is relative: {layout[key]}")
+
+    def test_the_generation_request_asks_for_an_absolute_root(self):
+        # Guards the call site rather than the helper: passing a bare
+        # "outputs" here is what broke, and the helper cannot detect it.
+        import inspect
+        import webui_generation
+        source = inspect.getsource(webui_generation._prepare_generation_request)
+        self.assertIn("os.path.abspath", source)
+        self.assertNotIn('output_root="outputs"', source)
+
+
 if __name__ == "__main__":
     unittest.main()
