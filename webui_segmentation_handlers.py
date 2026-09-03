@@ -29,6 +29,7 @@ duration read off the wav header and nothing else.
 from __future__ import annotations
 
 import hashlib
+import math
 import os
 import queue
 import threading
@@ -123,10 +124,21 @@ def default_export_root() -> str:
 def _format_clock(seconds: Any) -> str:
     """Seconds as m:ss.s, so a position in a long recording is scannable."""
     try:
-        total = max(0.0, float(seconds))
+        value = float(seconds)
     except (TypeError, ValueError):
         return MISSING_MEASUREMENT
-    minutes, remainder = divmod(total, 60.0)
+    # Before the clamp, not after. An infinity survives float() and then kills
+    # int(), because divmod(inf, 60) is (nan, nan); and clamping first would
+    # hide it, since max(0.0, nan) is 0.0 and would report a position of zero
+    # for a number that is not one. A real scan cannot produce either, but
+    # this formats whatever is in the browser's copy of the state.
+    if not math.isfinite(value):
+        return MISSING_MEASUREMENT
+    total = max(0.0, value)
+    # Rounded before the split, not after: divmod first would render 59.96 as
+    # "0:60.0", because the carry happens in the f-string where the minutes
+    # are already fixed.
+    minutes, remainder = divmod(round(total, 1), 60.0)
     return f"{int(minutes)}:{remainder:04.1f}"
 
 
@@ -486,9 +498,12 @@ def preview_segment_ui(
         return gr.update(value=None), gr.update(value="", visible=False)
     try:
         path = export_segment((state or {}).get("source") or "", segment, export_root)
-    except (OSError, RuntimeError) as exc:
-        # librosa raises RuntimeError for audio it cannot decode, and this
-        # runs on every dropdown change, so it must not take the page down.
+    except Exception as exc:            # noqa: BLE001 - surfaced, never swallowed
+        # Broad on purpose. A failed decode has no stable type here: missing
+        # files give OSError, libsndfile gives a RuntimeError, the audioread
+        # fallback gives NoBackendError and a truncated file gives EOFError,
+        # both plain Exceptions. This runs unattended on every dropdown
+        # change, so an uncaught one takes the page down.
         return (
             gr.update(value=None),
             gr.update(value=f"Could not cut that segment out: {exc}", visible=True),
@@ -511,7 +526,7 @@ def use_segment_as_reference_ui(
             value="Scan a recording and pick a segment first.", visible=True)
     try:
         path = export_segment((state or {}).get("source") or "", segment, export_root)
-    except (OSError, RuntimeError) as exc:
+    except Exception as exc:            # noqa: BLE001 - surfaced, never swallowed
         return gr.update(), gr.update(
             value=f"Could not cut that segment out: {exc}", visible=True)
 
@@ -586,7 +601,7 @@ def save_segment_to_voice_ui(
     source = (state or {}).get("source") or ""
     try:
         path = export_segment(source, segment, export_root)
-    except (OSError, RuntimeError) as exc:
+    except Exception as exc:            # noqa: BLE001 - surfaced, never swallowed
         return characters.refresh_panel(
             mode, slug, f"Could not cut that segment out: {exc}", root)
 

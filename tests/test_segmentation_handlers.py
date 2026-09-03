@@ -77,6 +77,29 @@ def a_recording(path, bursts=3, burst_s=3.0, gap_s=1.0, rate=FIXTURE_RATE):
     return str(path)
 
 
+class _Undecodable:
+    """Sources that exist but cannot be decoded, and what they really raise.
+
+    A missing file gives FileNotFoundError, which is an OSError, and testing
+    only that hid the real cases: librosa's decode failures have no common
+    base. libsndfile raises a RuntimeError, the audioread fallback raises
+    NoBackendError and a truncated file raises EOFError -- both of those are
+    plain Exceptions and escaped a narrower catch.
+    """
+
+    @staticmethod
+    def corrupt(directory, name="corrupt.wav"):
+        path = Path(directory) / name
+        path.write_bytes(b"RIFF\x00\x00\x00\x00WAVEjunkjunkjunkjunk")
+        return str(path)
+
+    @staticmethod
+    def empty(directory, name="zero.wav"):
+        path = Path(directory) / name
+        path.write_bytes(b"")
+        return str(path)
+
+
 class _Scratch(unittest.TestCase):
     def setUp(self):
         self._dir = tempfile.TemporaryDirectory()
@@ -116,6 +139,24 @@ class FormattingTests(_Scratch):
 
     def test_a_clock_given_nonsense_does_not_raise(self):
         self.assertEqual(handlers._format_clock("later"), handlers.MISSING_MEASUREMENT)
+
+    def test_a_clock_given_an_infinity_does_not_raise(self):
+        # float() accepts it and int() then dies on it: divmod(inf, 60) is
+        # (nan, nan). Nothing else in this module raises, and neither may this.
+        for value in (float("inf"), float("-inf"), float("nan")):
+            self.assertEqual(handlers._format_clock(value),
+                             handlers.MISSING_MEASUREMENT)
+
+    def test_a_position_just_under_a_minute_carries_into_the_next_one(self):
+        # Splitting before rounding renders 59.96 as "0:60.0", because by the
+        # time the f-string rounds the seconds the minutes are already fixed.
+        self.assertEqual(handlers._format_clock(59.96), "1:00.0")
+        self.assertEqual(handlers._format_clock(119.96), "2:00.0")
+        self.assertEqual(handlers._format_clock(599.96), "10:00.0")
+
+    def test_a_position_that_does_not_carry_is_left_alone(self):
+        self.assertEqual(handlers._format_clock(59.94), "0:59.9")
+        self.assertEqual(handlers._format_clock(61.5), "1:01.5")
 
     def test_a_voiced_fraction_is_shown_as_a_percentage(self):
         self.assertEqual(handlers._format_percent(0.802), "80%")
@@ -549,6 +590,21 @@ class PreviewTests(_Scratch):
         self.assertIsNone(audio["value"])
         self.assertIn("Could not cut", detail["value"])
 
+    def test_a_source_that_cannot_be_decoded_is_reported_not_raised(self):
+        # This one runs unattended on every dropdown change, so a raise here
+        # is a spinner that stops and nothing else.
+        for source in (_Undecodable.corrupt(self.scratch),
+                       _Undecodable.empty(self.scratch)):
+            state = handlers.scan_state(source, FIXTURE_RATE, [a_segment()])
+            audio, detail = handlers.preview_segment_ui(state, 0, self.exports)
+            self.assertIsNone(audio["value"], source)
+            self.assertIn("Could not cut", detail["value"])
+
+    def test_a_source_that_is_a_directory_is_reported_not_raised(self):
+        state = handlers.scan_state(self.scratch, FIXTURE_RATE, [a_segment()])
+        audio, _ = handlers.preview_segment_ui(state, 0, self.exports)
+        self.assertIsNone(audio["value"])
+
 
 class UseAsReferenceTests(_Scratch):
     def test_the_reference_slot_gets_the_cut_segment(self):
@@ -579,6 +635,14 @@ class UseAsReferenceTests(_Scratch):
         state = handlers.scan_state(os.path.join(self.scratch, "gone.wav"),
                                     FIXTURE_RATE, [a_segment()])
         reference, status = handlers.use_segment_as_reference_ui(state, 0, self.exports)
+        self.assertNotIn("value", reference)
+        self.assertIn("Could not cut", status["value"])
+
+    def test_a_source_that_cannot_be_decoded_is_reported_not_raised(self):
+        state = handlers.scan_state(_Undecodable.corrupt(self.scratch),
+                                    FIXTURE_RATE, [a_segment()])
+        reference, status = handlers.use_segment_as_reference_ui(
+            state, 0, self.exports)
         self.assertNotIn("value", reference)
         self.assertIn("Could not cut", status["value"])
 
@@ -676,6 +740,16 @@ class SaveToVoiceTests(_Scratch):
         result = handlers.save_segment_to_voice_ui(
             store.MODE_ONESHOT, "", state, 0, "", self.library, self.exports)
         self.assertIn("Select a voice", result[3]["value"])
+
+    def test_a_source_that_cannot_be_decoded_is_reported_not_raised(self):
+        slug = self.a_voice()
+        state = handlers.scan_state(_Undecodable.corrupt(self.scratch),
+                                    FIXTURE_RATE, [a_segment()])
+        result = handlers.save_segment_to_voice_ui(
+            store.MODE_ONESHOT, slug, state, 0, "", self.library, self.exports)
+        self.assertIn("Could not cut", result[3]["value"])
+        self.assertEqual(
+            store.load_character(self.library, slug)["oneshot"]["clips"], [])
 
     def test_a_refused_save_does_not_leave_a_cut_wav_behind(self):
         # Exporting first and refusing afterwards leaves a working file that
