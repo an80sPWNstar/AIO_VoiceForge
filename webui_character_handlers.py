@@ -155,8 +155,14 @@ def _name_of(slug: str, root: Optional[str] = None) -> str:
     return (document or {}).get("name", "") if document else ""
 
 
-def _refresh(mode: str, slug: str, message: str, root: Optional[str] = None):
-    """The four outputs every mutating button returns."""
+def refresh_panel(mode: str, slug: str, message: str, root: Optional[str] = None):
+    """The four outputs every mutating button returns.
+
+    Public because it is the panel's contract, not an implementation detail:
+    anything that adds a control to this panel -- including the segmentation
+    handlers, which live in their own module -- has to return these same four
+    in this same order.
+    """
     choices = character_choices(mode, root)
     values = [value for _, value in choices]
     selected = slug if slug in values else (values[0] if values else NO_SELECTION)
@@ -166,6 +172,12 @@ def _refresh(mode: str, slug: str, message: str, root: Optional[str] = None):
         gr.update(value=describe_character(mode, selected, root)),
         gr.update(value=message, visible=bool(message)),
     )
+
+
+# The name the rest of this module was written against. Kept so the eight
+# call sites below read as they did, rather than churning them to prove a
+# rename happened.
+_refresh = refresh_panel
 
 
 def create_character_ui(mode: str, name: str, root: Optional[str] = None):
@@ -239,8 +251,15 @@ def use_character_ui(mode: str, slug: str, root: Optional[str] = None):
 
 
 def add_reference_to_character_ui(mode: str, slug: str, reference_path: Optional[str],
-                                  label: str = "", root: Optional[str] = None):
-    """Add Current Reference pressed: file the loaded clip under this voice."""
+                                  label: str = "", root: Optional[str] = None,
+                                  metrics: Optional[Dict[str, Any]] = None):
+    """Add Current Reference pressed: file the loaded clip under this voice.
+
+    `metrics` is for a caller that already measured the clip -- a segment cut
+    out of a scan arrives with its loudness and pitch known. When it is not
+    given, the wav header is read for a duration and nothing else, which is
+    all this handler can afford between two clicks.
+    """
     if mode == store.MODE_RVC:
         return _refresh(mode, slug, "An RVC voice holds a model, not clips.", root)
     if not slug:
@@ -248,10 +267,11 @@ def add_reference_to_character_ui(mode: str, slug: str, reference_path: Optional
     if not reference_path:
         return _refresh(mode, slug, "Load a reference clip first.", root)
 
-    metrics: Dict[str, Any] = {}
-    duration = _wav_duration_seconds(reference_path)
-    if duration is not None:
-        metrics["duration_s"] = duration
+    if metrics is None:
+        metrics = {}
+        duration = _wav_duration_seconds(reference_path)
+        if duration is not None:
+            metrics["duration_s"] = duration
     try:
         store.add_clip(root or CHARACTER_LIBRARY_ROOT, slug, reference_path,
                        metrics, label=label or "")
@@ -305,7 +325,8 @@ def _wav_duration_seconds(path: str) -> Optional[float]:
     Deliberately only the stdlib `wave` module: this runs on the UI thread
     between two clicks, and pulling in librosa to read a header would cost
     seconds. Anything that is not a plain wav is left unmeasured rather than
-    guessed, and the segmentation stage will fill it in properly later.
+    guessed. A clip that came from a scan skips this entirely -- it arrives
+    with `metrics` already measured, which is the properly-measured path.
     """
     import wave
 
