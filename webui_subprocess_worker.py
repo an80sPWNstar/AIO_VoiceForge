@@ -102,8 +102,9 @@ def release_cuda_cache() -> None:
     try:
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
-    except Exception:
-        pass
+    except Exception as exc:
+        # A failure here means VRAM is not being released; say so.
+        print(f"Engine worker: could not release CUDA cache ({exc}).", flush=True)
 
 
 class ModelHolder:

@@ -120,5 +120,49 @@ class ModuleWorkerTests(unittest.TestCase):
         self.assertGreaterEqual(engine_worker.DEFAULT_IDLE_SECONDS, 0.0)
 
 
+class _FakeProcess:
+    """poll() None = still running; the only two attributes status() reads."""
+
+    pid = 12345
+
+    @staticmethod
+    def poll():
+        return None
+
+
+class ElapsedTimeTests(unittest.TestCase):
+    """status(now=...) computes uptime and idle from an injected clock.
+
+    Until `now` was injectable the clock was read inside the function, so
+    the idle policy -- the thing that decides whether to release the GPU --
+    could only be tested by actually sleeping.
+    """
+
+    def setUp(self):
+        self.worker = engine_worker.EngineWorker()
+        self.worker._process = _FakeProcess()
+        self.worker._started_at = 1000.0
+        self.worker._last_activity = 1600.0
+
+    def test_uptime_is_measured_from_start_to_the_injected_now(self):
+        state = self.worker.status(now=1750.0)
+        self.assertEqual(state["uptime_seconds"], 750.0)
+
+    def test_idle_is_measured_from_last_activity_while_not_busy(self):
+        state = self.worker.status(now=1750.0)
+        self.assertEqual(state["idle_seconds"], 150.0)
+
+    def test_a_busy_worker_reports_no_idle_time(self):
+        self.worker._busy = True
+        state = self.worker.status(now=1750.0)
+        self.assertEqual(state["idle_seconds"], 0.0)
+
+    def test_the_default_clock_is_the_real_one(self):
+        # Bound below by the fixture's last_activity: a real time.time() is
+        # far past 1600.0, so idle comes out large and positive.
+        state = self.worker.status()
+        self.assertGreater(state["idle_seconds"], 150.0)
+
+
 if __name__ == "__main__":
     unittest.main()

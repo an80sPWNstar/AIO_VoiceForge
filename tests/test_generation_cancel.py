@@ -114,6 +114,43 @@ class MetadataCancelTests(unittest.TestCase):
         with open(path, encoding="utf-8") as handle:
             self.assertEqual(json.load(handle)["status"], "completed")
 
+    def test_elapsed_time_is_computed_from_the_injected_clock(self):
+        # started_at 12:00:00 -0600, clock injected at 12:01:30 in the same
+        # zone: exactly 90 seconds elapsed, no sleeping involved.
+        from datetime import datetime, timedelta, timezone
+
+        zone = timezone(timedelta(hours=-6))
+        path = self._write({
+            "status": "processing",
+            "processing": {"started_at": "2026-09-03T12:00:00-0600"},
+        })
+        gen._mark_metadata_canceled(
+            path, "Generation canceled by user.",
+            now=lambda tz=None: datetime(2026, 9, 3, 12, 1, 30, tzinfo=zone),
+        )
+        with open(path, encoding="utf-8") as handle:
+            processing = json.load(handle)["processing"]
+        self.assertEqual(processing["elapsed_ms"], 90000)
+        self.assertEqual(processing["elapsed_seconds"], 90.0)
+
+    def test_a_clock_earlier_than_the_start_is_clamped_to_zero(self):
+        # The two stamps come from two processes; skew must not produce a
+        # negative elapsed time in the record.
+        from datetime import datetime, timedelta, timezone
+
+        zone = timezone(timedelta(hours=-6))
+        path = self._write({
+            "status": "processing",
+            "processing": {"started_at": "2026-09-03T12:00:00-0600"},
+        })
+        gen._mark_metadata_canceled(
+            path, "Generation canceled by user.",
+            now=lambda tz=None: datetime(2026, 9, 3, 11, 59, 0, tzinfo=zone),
+        )
+        with open(path, encoding="utf-8") as handle:
+            processing = json.load(handle)["processing"]
+        self.assertEqual(processing["elapsed_ms"], 0)
+
     def test_a_missing_file_is_not_an_error(self):
         gen._mark_metadata_canceled("/definitely/not/here/metadata.json", "x")
 

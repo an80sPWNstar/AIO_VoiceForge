@@ -156,8 +156,9 @@ from webui_preview import (
     get_text_processing_sections,
     resolve_max_text_tokens,
 )
+from subtitle_render import build_subtitle_status_message
 from webui_generation import (
-    build_subtitle_status_message,
+    DEFAULT_EMOTION_BIASES,
     cancel_generation_process,
     gen_single,
     normalize_emo_vector,
@@ -965,22 +966,22 @@ with gr.Blocks(title=APP_TITLE) as demo:
         gr.Markdown("### 🎛️ Custom Emotion Bias Weights")
         gr.Markdown("Fine-tune individual emotion channel biases in normalize_emo_vec() when Apply Emotion Bias is enabled:")
         with gr.Row():
-            emo_bias_joy = gr.Slider(label="Joy Bias", value=0.9375, minimum=0.5, maximum=1.5, step=0.0625,
+            emo_bias_joy = gr.Slider(label="Joy Bias", value=DEFAULT_EMOTION_BIASES[0], minimum=0.5, maximum=1.5, step=0.0625,
                                      info="Adjusts how much joy/happiness is expressed. <1.0 = less joyful, >1.0 = more joyful")
-            emo_bias_anger = gr.Slider(label="Anger Bias", value=0.875, minimum=0.5, maximum=1.5, step=0.0625,
+            emo_bias_anger = gr.Slider(label="Anger Bias", value=DEFAULT_EMOTION_BIASES[1], minimum=0.5, maximum=1.5, step=0.0625,
                                        info="Adjusts anger intensity. <1.0 = less angry, >1.0 = more angry")
-            emo_bias_sad = gr.Slider(label="Sadness Bias", value=1.0, minimum=0.5, maximum=1.5, step=0.0625,
+            emo_bias_sad = gr.Slider(label="Sadness Bias", value=DEFAULT_EMOTION_BIASES[2], minimum=0.5, maximum=1.5, step=0.0625,
                                      info="Adjusts sadness expression. <1.0 = less sad, >1.0 = more sad")
-            emo_bias_fear = gr.Slider(label="Fear Bias", value=1.0, minimum=0.5, maximum=1.5, step=0.0625,
+            emo_bias_fear = gr.Slider(label="Fear Bias", value=DEFAULT_EMOTION_BIASES[3], minimum=0.5, maximum=1.5, step=0.0625,
                                       info="Adjusts fear/anxiety expression. <1.0 = less fearful, >1.0 = more fearful")
         with gr.Row():
-            emo_bias_disgust = gr.Slider(label="Disgust Bias", value=0.9375, minimum=0.5, maximum=1.5, step=0.0625,
+            emo_bias_disgust = gr.Slider(label="Disgust Bias", value=DEFAULT_EMOTION_BIASES[4], minimum=0.5, maximum=1.5, step=0.0625,
                                          info="Adjusts disgust expression. <1.0 = less disgusted, >1.0 = more disgusted")
-            emo_bias_depression = gr.Slider(label="Depression Bias", value=0.9375, minimum=0.5, maximum=1.5, step=0.0625,
+            emo_bias_depression = gr.Slider(label="Depression Bias", value=DEFAULT_EMOTION_BIASES[5], minimum=0.5, maximum=1.5, step=0.0625,
                                            info="Adjusts melancholic/depressed tone. <1.0 = less depressed, >1.0 = more depressed")
-            emo_bias_surprise = gr.Slider(label="Surprise Bias", value=0.6875, minimum=0.5, maximum=1.5, step=0.0625,
+            emo_bias_surprise = gr.Slider(label="Surprise Bias", value=DEFAULT_EMOTION_BIASES[6], minimum=0.5, maximum=1.5, step=0.0625,
                                           info="Adjusts surprise/amazement expression. <1.0 = less surprised, >1.0 = more surprised")
-            emo_bias_calm = gr.Slider(label="Calm Bias", value=0.5625, minimum=0.5, maximum=1.5, step=0.0625,
+            emo_bias_calm = gr.Slider(label="Calm Bias", value=DEFAULT_EMOTION_BIASES[7], minimum=0.5, maximum=1.5, step=0.0625,
                                       info="Adjusts calm/neutral tone. <1.0 = less calm, >1.0 = more calm and peaceful")
 
         # Define parameter lists for function calls

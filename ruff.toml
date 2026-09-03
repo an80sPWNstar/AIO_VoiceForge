@@ -1,0 +1,12 @@
+# Minimal by design: this repo's recurring bug class is an undefined name in a
+# body no test executes (F821), and its recurring style fault is the bare
+# except (E722). tools/gate.py runs F821 on every commit; this file makes a
+# plain `ruff check` agree with it and adds nothing that would drown either
+# signal in style noise.
+
+# Vendored upstream engine, historical reference, and generated i18n; none of
+# it is ours to fix.
+exclude = ["indextts", "archive", "tools/i18n"]
+
+[lint]
+select = ["F821", "E722"]

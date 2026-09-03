@@ -18,7 +18,7 @@ from typing import Any, Dict, Optional
 import gradio as gr
 
 from subtitle_utils import parse_subtitle_file
-from webui_generation import build_subtitle_status_message
+from subtitle_render import build_subtitle_status_message
 from webui_runtime import EMO_CHOICES_ALL
 
 def _normalize_bool(value: Any, default: bool) -> bool:

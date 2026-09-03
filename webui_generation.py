@@ -27,26 +27,21 @@ import gradio as gr
 import engine_worker
 from subtitle_utils import (
     build_subtitle_render_units,
-    ensure_audio_matrix,
-    fit_audio_to_duration,
-    format_srt_timestamp,
     get_subtitle_extension,
     get_subtitle_format_label,
     parse_subtitle_file,
-    read_pcm16_wav,
-    retime_audio_file_with_ffmpeg,
 )
 from task_output_utils import (
+    abs_path_or_none,
     create_task_output_layout,
     normalize_file_extension,
     write_metadata_file,
 )
-from webui_media_utils import FFMPEG_AVAILABLE, MP3_AVAILABLE, save_pcm16_wav
+from webui_media_utils import FFMPEG_AVAILABLE, MP3_AVAILABLE
 from webui_preview import resolve_max_text_tokens
 from webui_progress import (
     GENERATION_PROGRESS_POLL_SECONDS,
     _drain_progress_file,
-    audio_duration_ms,
     current_timestamp,
     format_elapsed_duration,
     render_progress_bar,
@@ -59,76 +54,6 @@ from webui_runtime import (
 )
 
 SUBTITLE_TIMING_INTERVAL_SILENCE_MS = 0
-def finalize_subtitle_segment_audio(unit, unit_audio, sampling_rate, segment_path, temp_dir=None):
-    natural_audio = ensure_audio_matrix(unit_audio)
-    natural_duration_ms = audio_duration_ms(natural_audio, sampling_rate)
-
-    fit_info = {
-        "method": "copy",
-        "source_duration_ms": int(natural_duration_ms),
-        "target_duration_ms": int(unit.duration_ms),
-        "delta_ms_before_fit": int(natural_duration_ms - unit.duration_ms),
-        "stretch_rate": 1.0,
-        "output_duration_ms": int(natural_duration_ms),
-    }
-
-    if natural_audio.shape[0] == 0 and unit.duration_ms <= 0:
-        final_audio = natural_audio
-        save_pcm16_wav(final_audio, sampling_rate, segment_path)
-    elif natural_duration_ms == unit.duration_ms:
-        final_audio = natural_audio
-        save_pcm16_wav(final_audio, sampling_rate, segment_path)
-    elif FFMPEG_AVAILABLE:
-        if temp_dir:
-            os.makedirs(temp_dir, exist_ok=True)
-            raw_path = os.path.join(temp_dir, f"{unit.index:04d}_raw.wav")
-        else:
-            raw_path = f"{segment_path}.raw.wav"
-        try:
-            save_pcm16_wav(natural_audio, sampling_rate, raw_path)
-            fit_info = retime_audio_file_with_ffmpeg(
-                input_path=raw_path,
-                output_path=segment_path,
-                target_duration_ms=unit.duration_ms,
-            )
-            fitted_sampling_rate, final_audio = read_pcm16_wav(segment_path)
-            if fitted_sampling_rate != sampling_rate:
-                raise ValueError(
-                    f"Subtitle unit {unit.index} retimed at {fitted_sampling_rate} Hz instead of {sampling_rate} Hz"
-                )
-        finally:
-            if os.path.exists(raw_path):
-                os.remove(raw_path)
-    else:
-        final_audio, fit_info = fit_audio_to_duration(
-            natural_audio,
-            sampling_rate=sampling_rate,
-            target_duration_ms=unit.duration_ms,
-            return_info=True,
-        )
-        fit_info = dict(fit_info)
-        fit_info["method"] = f"python_{fit_info['method']}"
-        fit_info["output_duration_ms"] = audio_duration_ms(final_audio, sampling_rate)
-        save_pcm16_wav(final_audio, sampling_rate, segment_path)
-
-    print(
-        f">> Subtitle unit saved | unit {unit.index} | "
-        f"target {unit.duration_ms / 1000.0:.2f}s | natural {natural_duration_ms / 1000.0:.2f}s | "
-        f"final {fit_info['output_duration_ms'] / 1000.0:.2f}s | method {fit_info['method']} | "
-        f"stretch {fit_info['stretch_rate']:.4f}"
-    )
-    return {
-        "audio": final_audio,
-        "segment_path": segment_path,
-        "natural_duration_ms": int(natural_duration_ms),
-        "fit_info": fit_info,
-    }
-
-
-def abs_path_or_none(path):
-    return os.path.abspath(path) if path else None
-
-
 def resolve_optional_image_path(image_input):
     if not image_input:
         return None
@@ -157,59 +82,17 @@ def get_image_copy_extension(image_path):
     return normalize_file_extension(extension or ".png")
 
 
-def build_subtitle_status_message(cues, issues=None, sample_count=None, sampling_rate=None,
-                                  task_folder=None, segments_dir=None, subtitle_file=None):
-    if not cues:
-        return "No subtitle cues loaded."
-
-    format_label = get_subtitle_format_label(subtitle_file)
-    render_units = build_subtitle_render_units(cues)
-    message_parts = [
-        f"Loaded {len(cues)} {format_label} cue(s).",
-        f"Timeline end: {format_srt_timestamp(cues[-1].end_ms)}.",
-        f"Synthesis units: {len(render_units)}.",
-        (
-            "Subtitle timing uses cue start times, merges overlapping cues into larger render units when needed, "
-            "avoids extra section-gap silence inside each unit, and retimes each finished unit to its target slot."
-            if FFMPEG_AVAILABLE
-            else "Subtitle timing uses cue start times, merges overlapping cues into larger render units when needed, "
-            "avoids extra section-gap silence inside each unit, and falls back to in-process duration fitting because FFmpeg is unavailable."
-        ),
-    ]
-
-    if len(render_units) < len(cues):
-        message_parts.append(
-            f"Detected {len(cues) - len(render_units)} overlapping cue transition(s); overlapping cues will be synthesized as merged units."
-        )
-
-    if sample_count is not None and sampling_rate:
-        message_parts.append(f"Generated output length: {sample_count / float(sampling_rate):.2f}s.")
-
-    if issues is not None:
-        late_starts = [issue["delta_ms"] for issue in issues if issue["type"] == "late_start"]
-        overruns = [issue["delta_ms"] for issue in issues if issue["type"] == "slot_overrun"]
-        if late_starts:
-            message_parts.append(
-                f"{len(late_starts)} cue(s) started late because earlier speech ran long. Max late start: {max(late_starts)}ms."
-            )
-        if overruns:
-            message_parts.append(
-                f"{len(overruns)} cue(s) exceeded their subtitle duration. Max overrun: {max(overruns)}ms."
-            )
-        if not late_starts and not overruns:
-            message_parts.append("All subtitle cue starts were preserved without timing overruns.")
-
-    if task_folder:
-        message_parts.append(f"Task folder: {os.path.abspath(task_folder)}.")
-    if segments_dir:
-        message_parts.append(f"Separate cue WAVs: {os.path.abspath(segments_dir)}.")
-
-    return " ".join(message_parts)
+# Tuned per-channel weights applied before the emotion vector is normalized.
+# The order is POSITIONAL and bound to the eight emo_bias_* sliders on the
+# Advanced Parameters tab (webui.py), which read their defaults from here:
+# joy, anger, sadness, fear, disgust, depression, surprise, calm.
+# Reordering either side without the other silently mis-applies every bias.
+DEFAULT_EMOTION_BIASES = [0.9375, 0.875, 1.0, 1.0, 0.9375, 0.9375, 0.6875, 0.5625]
 
 
 def normalize_emo_vector(emo_vector, apply_bias=True, max_emotion_sum=0.8, custom_biases=None):
     if apply_bias:
-        emo_bias = custom_biases or [0.9375, 0.875, 1.0, 1.0, 0.9375, 0.9375, 0.6875, 0.5625]
+        emo_bias = custom_biases or DEFAULT_EMOTION_BIASES
         emo_vector = [vec * bias for vec, bias in zip(emo_vector, emo_bias)]
 
     emo_sum = sum(emo_vector)
@@ -257,7 +140,9 @@ def _cleanup_temp_file(path):
     if path and os.path.exists(path):
         try:
             os.remove(path)
-        except Exception:
+        except OSError:
+            # A file still held open is expected here; anything else would be
+            # a programming fault and should raise.
             pass
 
 
@@ -265,12 +150,20 @@ def _parse_started_at_timestamp(started_at):
     if not started_at:
         return None
     try:
-        return datetime.strptime(started_at, "%Y-%m-%dT%H:%M:%S%z")
-    except Exception:
+        return datetime.datetime.strptime(started_at, "%Y-%m-%dT%H:%M:%S%z")
+    except ValueError:
+        # A stamp another process wrote in a format this one does not know.
+        # (The old broad except here also hid an AttributeError -- this module
+        # imports the datetime MODULE, and `datetime.strptime` does not exist
+        # -- which silently kept elapsed time out of every canceled task.)
         return None
 
 
-def _mark_metadata_canceled(metadata_path, reason):
+def _mark_metadata_canceled(metadata_path, reason, now=None):
+    # `now` is an injectable clock (datetime.now-shaped) so elapsed-time
+    # behaviour is testable; the default is the real one. §3.2.
+    if now is None:
+        now = datetime.datetime.now
     if not metadata_path or not os.path.exists(metadata_path):
         return
 
@@ -283,15 +176,15 @@ def _mark_metadata_canceled(metadata_path, reason):
     if metadata.get("status") == "completed":
         return
 
-    now = current_timestamp()
+    ended_at = current_timestamp()
     metadata["status"] = "canceled"
-    metadata["updated_at"] = now
+    metadata["updated_at"] = ended_at
     metadata["error"] = reason
     metadata.setdefault("processing", {})
-    metadata["processing"]["ended_at"] = now
+    metadata["processing"]["ended_at"] = ended_at
     started_at = _parse_started_at_timestamp(metadata["processing"].get("started_at"))
     if started_at is not None:
-        elapsed_seconds = max(0.0, (datetime.now(started_at.tzinfo) - started_at).total_seconds())
+        elapsed_seconds = max(0.0, (now(started_at.tzinfo) - started_at).total_seconds())
         metadata["processing"]["elapsed_ms"] = int(round(elapsed_seconds * 1000.0))
         metadata["processing"]["elapsed_seconds"] = round(elapsed_seconds, 3)
         metadata["processing"]["elapsed_human"] = format_elapsed_duration(elapsed_seconds)

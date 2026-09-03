@@ -10,6 +10,16 @@ TASK_ID_RE = re.compile(r"^(\d{4})")
 INVALID_FILENAME_CHARS_RE = re.compile(r'[<>:"/\\|?*\x00-\x1f]+')
 
 
+def abs_path_or_none(path: str | None) -> str | None:
+    """Absolute path for metadata.json, or None for a value that has none.
+
+    Lived as an identical copy in both webui_generation.py and
+    webui_generation_runner.py; both processes write it into the same
+    metadata files, so it belongs in a module both import.
+    """
+    return os.path.abspath(path) if path else None
+
+
 def sanitize_output_basename(filename: str | None, fallback: str = "final") -> str:
     if not filename:
         return fallback

@@ -66,7 +66,7 @@ def get_next_file_number(output_dir="outputs", target_folder=None, prefix=""):
             num_str = filename[:4]
             if num_str.isdigit():
                 numbers.append(int(num_str))
-        except:
+        except ValueError:
             continue
 
     if numbers:
@@ -262,9 +262,11 @@ def extract_time_ranges(audio_path, time_ranges_str, sample_rate=24000):
                 if os.path.exists(seg_file):
                     os.remove(seg_file)
             if os.path.exists(temp_dir):
+                # OSError only: a bare except here swallowed Ctrl-C during a
+                # long extraction into a temp-directory cleanup.
                 try:
                     shutil.rmtree(temp_dir)
-                except:
+                except OSError:
                     pass
 
     except Exception as e:

@@ -17,7 +17,7 @@ from datetime import datetime
 import re
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 current_dir = os.path.dirname(os.path.abspath(__file__))
 
@@ -54,8 +54,13 @@ def _set_last_used_ui_preset(preset_name: str) -> None:
             _sanitize_preset_name(preset_name),
             encoding="utf-8",
         )
-    except Exception:
-        pass
+    except OSError as exc:
+        # If this write fails silently, the user's preset just stops being
+        # remembered across restarts with no indication anywhere.
+        print(
+            f"Presets: could not record last-used preset {preset_name!r} ({exc}).",
+            flush=True,
+        )
 
 
 def _get_last_used_ui_preset() -> Optional[str]:
@@ -71,7 +76,11 @@ def _get_last_used_ui_preset() -> Optional[str]:
     return name if name in _list_ui_presets() else None
 
 
-def _save_ui_preset(preset_name: str, config: Dict[str, Any]) -> str:
+def _save_ui_preset(preset_name: str, config: Dict[str, Any], now: Optional[Callable[[], datetime]] = None) -> str:
+    # `now` is an injectable clock so the _meta timestamps are testable;
+    # the default is the real one. §3.2.
+    if now is None:
+        now = datetime.now
     if not preset_name or not str(preset_name).strip():
         raise ValueError("Preset name cannot be empty.")
 
@@ -83,7 +92,7 @@ def _save_ui_preset(preset_name: str, config: Dict[str, Any]) -> str:
     cfg.setdefault("_meta", {})
     cfg["_meta"]["version"] = UI_PRESET_VERSION
     cfg["_meta"]["format"] = UI_PRESET_FORMAT
-    cfg["_meta"]["last_modified"] = datetime.now().isoformat()
+    cfg["_meta"]["last_modified"] = now().isoformat()
     if "created_at" not in cfg["_meta"]:
         cfg["_meta"]["created_at"] = cfg["_meta"]["last_modified"]
 

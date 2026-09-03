@@ -368,7 +368,12 @@ class EngineWorker:
 
     # -- reporting ---------------------------------------------------------
 
-    def status(self) -> dict:
+    def status(self, now: float | None = None) -> dict:
+        # `now` is an injectable clock reading so the idle/unload policy --
+        # the thing that decides whether to release the GPU -- is testable at
+        # this boundary. The default is the real clock.
+        if now is None:
+            now = time.time()
         with self._lock:
             running = self._is_running()
             return {
@@ -379,9 +384,9 @@ class EngineWorker:
                 # The worker loads the model on its first request, so having
                 # served one is what proves weights are resident.
                 "model_loaded": running and self._requests_served > 0,
-                "uptime_seconds": (time.time() - self._started_at) if self._started_at else 0.0,
+                "uptime_seconds": (now - self._started_at) if self._started_at else 0.0,
                 "idle_seconds": (
-                    (time.time() - self._last_activity)
+                    (now - self._last_activity)
                     if (self._last_activity and running and not self._busy)
                     else 0.0
                 ),

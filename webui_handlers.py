@@ -35,7 +35,7 @@ import tempfile
 import webui_tone_presets as tone_presets
 import webui_voice_shaping as voice_shaping
 from subtitle_utils import parse_subtitle_file, subtitle_cues_to_text
-from webui_generation import build_subtitle_status_message
+from subtitle_render import build_subtitle_status_message
 from webui_media_utils import extract_audio_from_media, extract_time_ranges
 from webui_preview import build_section_count_message, get_preview_rows
 from webui_runtime import EMO_CHOICES_ALL
