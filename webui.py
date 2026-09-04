@@ -376,11 +376,21 @@ with gr.Blocks(title=APP_TITLE) as demo:
                             character_add_btn = gr.Button(
                                 "Add Clip to Selected Voice", variant="secondary",
                                 elem_classes=["action-button"])
+                            character_train_btn = gr.Button(
+                                "Train RVC Model", variant="secondary",
+                                elem_classes=["action-button"])
                         # Deleting a library entry is not undoable, so the button
                         # arms on the first press the same way cancel does.
                         character_delete_confirm = gr.Checkbox(
                             label="Confirm delete", value=False, visible=True,
                             info="Tick this, then press Delete.",
+                        )
+                        # Training holds a GPU for minutes to hours, so it arms
+                        # the same way: tick, then press Train.
+                        character_train_confirm = gr.Checkbox(
+                            label="Confirm training", value=False, visible=True,
+                            info="Tick this, then press Train RVC Model. "
+                                 "Uses every clip this voice holds.",
                         )
                         character_status = gr.Textbox(
                             label="Character Library Status",
@@ -2066,6 +2076,16 @@ with gr.Blocks(title=APP_TITLE) as demo:
         inputs=[character_mode, character_select],
         outputs=[prompt_audio, reference_status],
         queue=False,
+    )
+
+    # queue=True, unlike its siblings: this handler is a generator that holds
+    # a GPU for the length of a training run, and only the queue can stream
+    # its progress yields to the browser.
+    character_train_btn.click(
+        character_handlers.train_character_ui,
+        inputs=[character_mode, character_select, character_train_confirm],
+        outputs=[character_select, character_name, character_summary, character_status],
+        queue=True,
     )
 
     character_save_btn.click(

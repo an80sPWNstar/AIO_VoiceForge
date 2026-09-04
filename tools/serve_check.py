@@ -48,6 +48,8 @@ WANTED = [
     # Character library (Audio Generation tab)
     "Save Loaded Voice As",
     "Add Clip to Selected Voice",
+    "Train RVC Model",
+    "Confirm training",
     # The two earlier stages of the ingestion pipeline
     "Clean Up Audio",
     "Send Cleaned to Reference Voice",

@@ -221,6 +221,49 @@ def delete_character_ui(mode: str, slug: str, confirmed: bool, root: Optional[st
     return _refresh(mode, slug, f"Could not delete {name!r}; it may be in use.", root)
 
 
+def train_character_ui(mode: str, slug: str, confirmed: bool, root: Optional[str] = None):
+    """Train RVC Model pressed. A generator: the first yield tells the browser
+    training has started, the last reports where it ended up.
+
+    Confirm-gated like delete, because this occupies a GPU for minutes to
+    hours. No cancel in this version -- the Applio chain runs as subprocesses
+    this handler waits on, and killing it mid-epoch is a feature that needs
+    designing, not a try/except.
+    """
+    import character_training  # deferred: keeps rvc modules off the import path of every other handler
+    import rvc_engine
+    import rvc_paths
+    from character_dataset import DatasetExportError
+
+    if not slug:
+        yield _refresh(mode, slug, "Select a voice first.", root)
+        return
+    if not confirmed:
+        yield _refresh(mode, slug, "Press Train again to confirm. This occupies a GPU until it finishes.", root)
+        return
+    missing = rvc_paths.missing_applio_parts()
+    if missing:
+        yield _refresh(mode, slug,
+                       f"RVC trainer not ready. Missing: {', '.join(missing)}. "
+                       "See rvc_paths.py for the install it expects.", root)
+        return
+
+    name = _name_of(slug, root) or slug
+    yield _refresh(mode, slug,
+                   f"Training {name!r}... this holds the GPU and can take a while. "
+                   "Progress prints in the console.", root)
+    try:
+        result = character_training.train_character(root or CHARACTER_LIBRARY_ROOT, slug)
+    except (DatasetExportError, rvc_engine.RVCError) as exc:
+        yield _refresh(mode, slug, f"Training failed: {exc}", root)
+        return
+    trained_seconds = result["manifest"]["total_seconds"]
+    yield _refresh(
+        mode, slug,
+        f"Trained {name!r} from {trained_seconds:.0f}s of clips. "
+        f"Model: {result['artifacts']['model_path']}", root)
+
+
 def use_character_ui(mode: str, slug: str, root: Optional[str] = None):
     """Use This Voice pressed: load the default clip into the reference slot."""
     if mode == store.MODE_RVC:

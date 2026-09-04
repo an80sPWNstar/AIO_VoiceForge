@@ -501,5 +501,62 @@ class SaveLoadedVoiceTests(_Panel):
         self.assertIn("Could not create", status["value"])
 
 
+class TrainTests(_Panel):
+    """Train RVC Model. The handler is a generator; drain() runs it dry the
+    way gradio's queue would and returns the LAST refresh, which is the one
+    the browser is left looking at."""
+
+    def drain(self, mode, slug, confirmed):
+        updates = list(handlers.train_character_ui(mode, slug, confirmed, self.root))
+        self.assertGreater(len(updates), 0)
+        return updates[-1]
+
+    def test_training_with_nothing_selected_is_refused(self):
+        _, _, _, status = self.drain(store.MODE_ONESHOT, "", True)
+        self.assertIn("Select a voice", status["value"])
+
+    def test_an_unconfirmed_press_arms_instead_of_training(self):
+        import character_training
+        slug = self.a_voice("Narrator")
+        with mock.patch.object(character_training, "train_character") as train:
+            _, _, _, status = self.drain(store.MODE_ONESHOT, slug, False)
+        train.assert_not_called()
+        self.assertIn("confirm", status["value"].lower())
+
+    def test_a_missing_trainer_install_is_a_message_not_a_crash(self):
+        import rvc_paths
+        slug = self.a_voice("Narrator")
+        with mock.patch.object(rvc_paths, "missing_applio_parts",
+                               return_value=[r"D:\Applio\core.py"]):
+            _, _, _, status = self.drain(store.MODE_ONESHOT, slug, True)
+        self.assertIn("core.py", status["value"])
+
+    def test_a_successful_run_reports_the_model_and_the_material(self):
+        import character_training, rvc_paths
+        slug = self.a_voice("Narrator")
+        result = {"manifest": {"total_seconds": 612.0},
+                  "artifacts": {"model_path": r"D:\Applio\logs\x\x_200e_1000s.pth",
+                                "index_path": r"D:\Applio\logs\x\x.index"}}
+        with mock.patch.object(rvc_paths, "missing_applio_parts", return_value=[]), \
+             mock.patch.object(character_training, "train_character",
+                               return_value=result) as train:
+            updates = list(handlers.train_character_ui(
+                store.MODE_ONESHOT, slug, True, self.root))
+        train.assert_called_once()
+        # first yield tells the browser training started; last reports the model
+        self.assertIn("Training", updates[0][3]["value"])
+        self.assertIn("612s", updates[-1][3]["value"])
+        self.assertIn("x_200e_1000s.pth", updates[-1][3]["value"])
+
+    def test_a_failed_training_reaches_the_status_line(self):
+        import character_training, rvc_engine, rvc_paths
+        slug = self.a_voice("Narrator")
+        with mock.patch.object(rvc_paths, "missing_applio_parts", return_value=[]), \
+             mock.patch.object(character_training, "train_character",
+                               side_effect=rvc_engine.RVCError("CUDA out of memory")):
+            _, _, _, status = self.drain(store.MODE_ONESHOT, slug, True)
+        self.assertIn("CUDA out of memory", status["value"])
+
+
 if __name__ == "__main__":
     unittest.main()
