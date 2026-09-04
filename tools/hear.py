@@ -62,10 +62,51 @@ def transcribe(wav_path, asr_python=ASR_PYTHON):
     return json.loads(result.stdout.strip().splitlines()[-1])
 
 
+_ONES = ["zero", "one", "two", "three", "four", "five", "six", "seven",
+         "eight", "nine", "ten", "eleven", "twelve", "thirteen", "fourteen",
+         "fifteen", "sixteen", "seventeen", "eighteen", "nineteen"]
+_TENS = ["", "", "twenty", "thirty", "forty", "fifty", "sixty", "seventy",
+         "eighty", "ninety"]
+_ORDINALS = {"first": "one", "second": "two", "third": "three", "fifth": "five",
+             "eighth": "eight", "ninth": "nine", "twelfth": "twelve"}
+
+
+def _number_to_words(number):
+    if number < 20:
+        return [_ONES[number]]
+    if number < 100:
+        tens, ones = divmod(number, 10)
+        return [_TENS[tens]] + ([_ONES[ones]] if ones else [])
+    if number < 10000:
+        hundreds, rest = divmod(number, 100)
+        words = _number_to_words(hundreds) + ["hundred"]
+        return words + _number_to_words(rest) if rest else words
+    return [str(number)]  # past what a test sentence will hold
+
+
 def normalize_words(text):
-    """Lowercase words, punctuation stripped: WER should count wrong WORDS,
-    not whisper's comma placement."""
-    return re.findall(r"[a-z0-9']+", text.lower())
+    """Lowercase words, punctuation stripped, digits spelled out.
+
+    WER should count wrong WORDS. Whisper writes "March 3rd" and "74" for a
+    perfectly spoken "March third" and "seventy four" -- the first sweep's
+    entire number-sentence column scored 0.23+ on flawless audio because of
+    it. Ordinal suffixes are dropped and ordinal words mapped to cardinals,
+    so "3rd"/"third"/"three" all compare equal; that trades a sliver of
+    strictness for not flagging correct speech."""
+    words = []
+    for token in re.findall(r"[a-z0-9']+", text.lower()):
+        token = re.sub(r"^(\d+)(st|nd|rd|th)$", r"\1", token)
+        if token.isdigit():
+            words.extend(_number_to_words(int(token)))
+        elif token in _ORDINALS:
+            words.append(_ORDINALS[token])
+        elif token.endswith("ieth") and token[:-4] + "y" in _TENS:
+            words.append(token[:-4] + "y")  # twentieth -> twenty
+        elif token.endswith("th") and token[:-2] in _ONES + _TENS:
+            words.append(token[:-2])  # fourth -> four, sixtieth handled above
+        else:
+            words.append(token)
+    return words
 
 
 def word_error_rate(expected, heard):
