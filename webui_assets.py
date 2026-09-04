@@ -13,11 +13,14 @@ import os
 
 current_dir = os.path.dirname(os.path.abspath(__file__))
 
-APP_TITLE = "Index TTS2 Premium SECourses App"
+APP_TITLE = "AIO VoiceForge"
 APP_ASSETS_DIR = os.path.join(current_dir, "ui_assets")
 APP_FAVICON_PATH = os.path.join(APP_ASSETS_DIR, "indextts_premium_favicon.svg")
 APP_HEAD = """
-<meta name="theme-color" content="#a11236">
+<meta name="theme-color" content="#d1310b">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,700;12..96,800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 <script>
 (() => {
   let sectionCountTimer = null;
@@ -156,178 +159,207 @@ APP_CSS = """
     background: transparent !important;
 }
 
+/* ------------------------------------------------------------------ */
+/* The console-key system.                                             */
+/*                                                                     */
+/* One quiet key treatment for every action, with a thin colored edge  */
+/* naming its function group -- intake, files, presets, destructive -- */
+/* and ONE hot key: Generate Speech, the forge strike. The page spends */
+/* all of its heat in that single element; everything else is tool     */
+/* steel. (This replaced seven unrelated candy gradients.)             */
+/* ------------------------------------------------------------------ */
+
+:root {
+    --vf-ember-hi: #ff7a3d;
+    --vf-ember: #e6470f;
+    --vf-ember-lo: #a02804;
+    --vf-key-top: #fdfcfa;
+    --vf-key-bottom: #eceae5;
+    --vf-key-border: rgba(60, 56, 50, 0.28);
+    --vf-key-text: #2b2a27;
+    --vf-edge: transparent;
+    --vf-edge-intake: #0f9f7f;
+    --vf-edge-files: #2c7fd8;
+    --vf-edge-presets: #7a5cd6;
+    --vf-edge-warn: #c8912a;
+    --vf-danger: #c23b52;
+}
+
+.dark {
+    --vf-key-top: #3d424b;
+    --vf-key-bottom: #262a31;
+    --vf-key-border: rgba(255, 255, 255, 0.14);
+    --vf-key-text: #eef0f3;
+}
+
 :is(button.action-button, .action-button button) {
     position: relative;
     overflow: hidden;
     min-height: 48px;
-    border-radius: 16px !important;
-    border: 1px solid rgba(255, 255, 255, 0.14) !important;
-    color: #fdf8ff !important;
-    font-weight: 700 !important;
+    border-radius: 12px !important;
+    border: 1px solid var(--vf-key-border) !important;
+    border-bottom-width: 3px !important;
+    background: linear-gradient(180deg, var(--vf-key-top) 0%, var(--vf-key-bottom) 100%) !important;
+    box-shadow: 0 1px 2px rgba(20, 18, 16, 0.12) !important;
+    color: var(--vf-key-text) !important;
+    font-weight: 650 !important;
     letter-spacing: 0.01em;
-    text-shadow: 0 1px 0 rgba(15, 23, 42, 0.28);
-    transition: transform 0.18s ease, box-shadow 0.18s ease, filter 0.18s ease !important;
+    text-shadow: none;
+    transition: transform 0.12s ease, box-shadow 0.12s ease, filter 0.12s ease !important;
 }
 
-:is(button.action-button, .action-button button)::before {
+/* The function edge: a thin strip of meaning, not a costume. */
+:is(button.action-button, .action-button button)::after {
     content: "";
     position: absolute;
-    inset: 0;
-    background: linear-gradient(120deg, transparent 18%, rgba(255, 255, 255, 0.22) 38%, transparent 56%);
-    transform: translateX(-160%);
-    transition: transform 0.55s ease;
+    left: 10px;
+    right: 10px;
+    bottom: 5px;
+    height: 3px;
+    border-radius: 2px;
+    background: var(--vf-edge);
     pointer-events: none;
 }
 
 :is(button.action-button, .action-button button):hover {
     transform: translateY(-1px);
-    filter: saturate(1.06) brightness(1.03);
-}
-
-:is(button.action-button, .action-button button):hover::before {
-    transform: translateX(160%);
+    box-shadow: 0 3px 8px rgba(20, 18, 16, 0.16) !important;
 }
 
 :is(button.action-button, .action-button button):active {
     transform: translateY(1px);
+    box-shadow: 0 0 1px rgba(20, 18, 16, 0.2) !important;
 }
 
 :is(button.action-button, .action-button button):focus-visible {
-    outline: 2px solid rgba(255, 255, 255, 0.82);
+    outline: 2px solid var(--vf-ember);
     outline-offset: 2px;
 }
 
-:is(button#extract-audio-button, #extract-audio-button button) {
-    background: linear-gradient(180deg, #ffd4a4 0%, #ffb05f 18%, #e67c26 58%, #9a4a0d 100%) !important;
-    border-color: rgba(160, 77, 14, 0.65) !important;
-    box-shadow:
-        0 14px 28px rgba(230, 124, 38, 0.28),
-        0 1px 0 rgba(255, 247, 234, 0.34) inset,
-        0 -3px 0 rgba(113, 50, 5, 0.28) inset !important;
-}
-
+/* Intake keys: audio coming into the forge. */
+:is(button#extract-audio-button, #extract-audio-button button),
 :is(button#load-audio-button, #load-audio-button button) {
-    background: linear-gradient(180deg, #9df2db 0%, #47d6ab 16%, #0f9f7f 56%, #0a5f4e 100%) !important;
-    border-color: rgba(8, 100, 82, 0.65) !important;
-    box-shadow:
-        0 14px 28px rgba(15, 159, 127, 0.25),
-        0 1px 0 rgba(229, 255, 248, 0.34) inset,
-        0 -3px 0 rgba(5, 73, 60, 0.28) inset !important;
+    --vf-edge: var(--vf-edge-intake);
 }
 
-:is(button#generate-speech-button, #generate-speech-button button) {
-    min-height: 54px;
-    letter-spacing: 0.03em;
-    color: #ffe7eb !important;
-    text-shadow:
-        0 0 8px rgba(255, 222, 228, 0.65),
-        0 0 18px rgba(255, 131, 157, 0.48),
-        0 1px 0 rgba(107, 13, 35, 0.9);
-    background:
-        radial-gradient(circle at 18% 0%, rgba(255, 197, 210, 0.36), transparent 34%),
-        linear-gradient(180deg, #ff9aae 0%, #ff6383 16%, #d91f4d 55%, #7f102c 100%) !important;
-    border-color: rgba(135, 17, 48, 0.72) !important;
-    box-shadow:
-        0 0 0 1px rgba(255, 180, 196, 0.12),
-        0 16px 34px rgba(217, 31, 77, 0.34),
-        0 0 26px rgba(255, 77, 116, 0.26),
-        0 1px 0 rgba(255, 234, 239, 0.34) inset,
-        0 -3px 0 rgba(95, 9, 31, 0.34) inset !important;
-    animation: premium-button-glow 2.8s ease-in-out infinite;
-}
-
-:is(button#generate-speech-button, #generate-speech-button button)::before {
-    background: linear-gradient(120deg, transparent 15%, rgba(255, 255, 255, 0.28) 36%, transparent 58%);
-    animation: premium-button-sheen 3.6s ease-in-out infinite;
-}
-
-:is(button#generate-speech-button, #generate-speech-button button):hover {
-    box-shadow:
-        0 0 0 1px rgba(255, 188, 202, 0.18),
-        0 20px 38px rgba(217, 31, 77, 0.42),
-        0 0 34px rgba(255, 77, 116, 0.34),
-        0 1px 0 rgba(255, 238, 242, 0.38) inset,
-        0 -3px 0 rgba(95, 9, 31, 0.38) inset !important;
-}
-
-:is(button#generate-speech-button, #generate-speech-button button):active {
-    animation-play-state: paused;
-}
-
+/* File keys. */
 :is(button#open-outputs-button, #open-outputs-button button) {
-    background: linear-gradient(180deg, #b5e8ff 0%, #69c8ff 18%, #238cd8 58%, #12518d 100%) !important;
-    border-color: rgba(19, 85, 145, 0.68) !important;
-    box-shadow:
-        0 14px 28px rgba(35, 140, 216, 0.26),
-        0 1px 0 rgba(234, 248, 255, 0.34) inset,
-        0 -3px 0 rgba(14, 60, 106, 0.28) inset !important;
+    --vf-edge: var(--vf-edge-files);
 }
 
-:is(button#preset-save-button, #preset-save-button button) {
-    background: linear-gradient(180deg, #d6bcff 0%, #b084ff 18%, #7a41d8 58%, #4c1f96 100%) !important;
-    border-color: rgba(80, 31, 151, 0.68) !important;
-    box-shadow:
-        0 14px 28px rgba(122, 65, 216, 0.27),
-        0 1px 0 rgba(246, 239, 255, 0.34) inset,
-        0 -3px 0 rgba(60, 20, 118, 0.28) inset !important;
-}
-
+/* Preset keys. */
+:is(button#preset-save-button, #preset-save-button button),
 :is(button#preset-load-button, #preset-load-button button) {
-    background: linear-gradient(180deg, #c1cbff 0%, #8ea2ff 18%, #4c65e2 58%, #2c3a97 100%) !important;
-    border-color: rgba(42, 58, 151, 0.7) !important;
-    box-shadow:
-        0 14px 28px rgba(76, 101, 226, 0.26),
-        0 1px 0 rgba(241, 244, 255, 0.34) inset,
-        0 -3px 0 rgba(28, 40, 112, 0.3) inset !important;
+    --vf-edge: var(--vf-edge-presets);
 }
 
 :is(button#preset-reset-button, #preset-reset-button button) {
-    background: linear-gradient(180deg, #ffe9b0 0%, #ffd463 18%, #e0a61f 58%, #8f6200 100%) !important;
-    border-color: rgba(145, 99, 1, 0.68) !important;
-    color: #fffdf5 !important;
-    box-shadow:
-        0 14px 28px rgba(224, 166, 31, 0.26),
-        0 1px 0 rgba(255, 251, 231, 0.34) inset,
-        0 -3px 0 rgba(109, 74, 2, 0.28) inset !important;
+    --vf-edge: var(--vf-edge-warn);
 }
 
+/* Destructive: the one key that is a different key. */
 :is(button#preset-delete-button, #preset-delete-button button) {
-    background: linear-gradient(180deg, #ffbdd1 0%, #ff7aa2 18%, #d62f6b 58%, #7b163d 100%) !important;
-    border-color: rgba(125, 20, 62, 0.72) !important;
+    --vf-edge: transparent;
+    background: transparent !important;
+    border: 1px solid var(--vf-danger) !important;
+    border-bottom-width: 3px !important;
+    color: var(--vf-danger) !important;
+    box-shadow: none !important;
+}
+
+/* ------------------------------------------------------------------ */
+/* The forge strike.                                                   */
+/* ------------------------------------------------------------------ */
+
+:is(button#generate-speech-button, #generate-speech-button button) {
+    min-height: 54px;
+    letter-spacing: 0.02em;
+    color: #fff4ec !important;
+    font-weight: 750 !important;
+    text-shadow: 0 1px 0 rgba(80, 20, 0, 0.55);
+    background:
+        radial-gradient(120% 90% at 50% 0%, rgba(255, 176, 122, 0.5), transparent 52%),
+        linear-gradient(180deg, var(--vf-ember-hi) 0%, var(--vf-ember) 52%, var(--vf-ember-lo) 100%) !important;
+    border: 1px solid rgba(122, 34, 4, 0.75) !important;
+    border-bottom-width: 3px !important;
     box-shadow:
-        0 14px 28px rgba(214, 47, 107, 0.28),
-        0 1px 0 rgba(255, 238, 244, 0.34) inset,
-        0 -3px 0 rgba(92, 10, 43, 0.32) inset !important;
+        0 10px 26px rgba(209, 49, 11, 0.32),
+        0 1px 0 rgba(255, 226, 205, 0.45) inset !important;
 }
 
-@keyframes premium-button-glow {
-    0%, 100% {
-        box-shadow:
-            0 14px 30px rgba(226, 58, 94, 0.26),
-            0 1px 0 rgba(255, 255, 255, 0.35) inset,
-            0 -3px 0 rgba(104, 10, 30, 0.32) inset;
-    }
-    50% {
-        box-shadow:
-            0 18px 38px rgba(226, 58, 94, 0.4),
-            0 1px 0 rgba(255, 255, 255, 0.38) inset,
-            0 -3px 0 rgba(104, 10, 30, 0.36) inset;
-    }
+:is(button#generate-speech-button, #generate-speech-button button)::after {
+    display: none;
 }
 
-@keyframes premium-button-sheen {
-    0%, 100% {
-        transform: translateX(-150%);
-    }
-    45%, 55% {
-        transform: translateX(150%);
-    }
+:is(button#generate-speech-button, #generate-speech-button button):hover {
+    filter: brightness(1.05);
+    box-shadow:
+        0 14px 32px rgba(209, 49, 11, 0.42),
+        0 1px 0 rgba(255, 226, 205, 0.5) inset !important;
+}
+
+/* ------------------------------------------------------------------ */
+/* Masthead and typography.                                            */
+/* ------------------------------------------------------------------ */
+
+.vf-masthead {
+    display: flex;
+    align-items: baseline;
+    gap: 0.9rem;
+    flex-wrap: wrap;
+    padding: 0.35rem 0 0.15rem;
+}
+
+.vf-wordmark {
+    font-family: "Bricolage Grotesque", Inter, ui-sans-serif, sans-serif;
+    font-weight: 800;
+    font-size: 1.7rem;
+    letter-spacing: -0.03em;
+    line-height: 1;
+    color: var(--body-text-color);
+}
+
+.vf-wordmark em {
+    font-style: normal;
+    color: var(--vf-ember);
+}
+
+.vf-tagline {
+    font-family: "JetBrains Mono", ui-monospace, monospace;
+    font-size: 0.78rem;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--body-text-color-subdued, #8a8f98);
+}
+
+.vf-credit,
+.vf-credit:visited {
+    margin-left: auto;
+    font-size: 0.78rem;
+    color: var(--body-text-color-subdued, #8a8f98);
+    text-decoration: none;
+    border-bottom: 1px dotted currentColor;
+}
+
+.top-input-panel h3,
+.top-input-panel .prose h3 {
+    font-family: "Bricolage Grotesque", Inter, ui-sans-serif, sans-serif;
+}
+
+/* Paths, cue examples, and the scan table read in mono: these are the   */
+/* page's instrument readouts, and lining digits keep columns honest.    */
+.caption-timing-help code,
+.top-input-panel code,
+table.svelte-table, .table-wrap table, .gradio-dataframe table {
+    font-family: "JetBrains Mono", ui-monospace, monospace;
+    font-variant-numeric: tabular-nums;
+    font-size: 0.86em;
 }
 
 @media (prefers-reduced-motion: reduce) {
-    :is(button#generate-speech-button, #generate-speech-button button),
-    :is(button#generate-speech-button, #generate-speech-button button)::before {
-        animation: none !important;
+    :is(button.action-button, .action-button button),
+    :is(button#generate-speech-button, #generate-speech-button button) {
+        transition: none !important;
     }
 }
 """

@@ -263,10 +263,38 @@ GENERATION_PROGRESS_IDLE = render_progress_bar(0.0, "Idle")
 
 
 
-theme = gr.themes.Soft()
+# Warm stone neutrals with an ember primary: the forge palette. The single
+# saturated element on the page stays the Generate key (see APP_CSS); the
+# theme's orange primary keeps sliders and checkboxes in the same family
+# without competing with it.
+theme = gr.themes.Soft(primary_hue="orange", neutral_hue="stone")
 theme.font = [gr.themes.GoogleFont("Inter"), "Tahoma", "ui-sans-serif", "system-ui", "sans-serif"]
-with gr.Blocks(title=APP_TITLE) as demo:
-    gr.Markdown("## Index TTS2 Premium SECourses App V4.1 : https://www.patreon.com/posts/139297407")
+# Soft paints every block-corner label chip in the primary color, which in
+# dark mode means a page of solid orange blocks shouting over the one element
+# that is allowed to be hot. Chips are wayfinding, not actions: quiet them to
+# the surface palette in both modes.
+theme.set(
+    block_label_background_fill="*background_fill_secondary",
+    block_label_background_fill_dark="*background_fill_secondary",
+    block_label_text_color="*body_text_color_subdued",
+    block_label_text_color_dark="*body_text_color_subdued",
+    block_label_border_color="*border_color_primary",
+    block_label_border_color_dark="*border_color_primary",
+)
+# css/head/theme belong to the Blocks, not to launch(): the app is also served
+# by tools/serve_check.py and ad-hoc harnesses, and chrome passed only at
+# launch() silently vanishes on every path but the __main__ one.
+with gr.Blocks(title=APP_TITLE, theme=theme, css=APP_CSS, head=APP_HEAD) as demo:
+    gr.HTML(
+        """
+        <div class="vf-masthead">
+          <div class="vf-wordmark">AIO <em>VoiceForge</em></div>
+          <div class="vf-tagline">record &middot; clean &middot; cast &middot; forge</div>
+          <a class="vf-credit" href="https://www.patreon.com/posts/139297407"
+             target="_blank" rel="noopener">built on Index-TTS2 Premium V4.1 (SECourses)</a>
+        </div>
+        """
+    )
 
     with gr.Tab("Audio Generation"):
         with gr.Row(equal_height=False):
@@ -418,7 +446,11 @@ with gr.Blocks(title=APP_TITLE) as demo:
                         value=False,
                         info="Generate separate caption timing units, then auto-retime each finished unit to the caption duration before timeline assembly."
                     )
-                    gr.Markdown(CAPTION_TIMING_HELP, elem_classes="caption-timing-help")
+                    # Closed by default: this tutorial used to sit fully
+                    # expanded and owned the column. It reads once; the
+                    # checkbox above is used every session.
+                    with gr.Accordion("How cue timing works", open=False):
+                        gr.Markdown(CAPTION_TIMING_HELP, elem_classes="caption-timing-help")
                     subtitle_status = gr.Textbox(
                         label="Caption Timing Status",
                         value="",
@@ -2112,8 +2144,5 @@ if __name__ == "__main__":
         server_port=cmd_args.port,
         share=cmd_args.share,
         inbrowser=True,
-        theme=theme,
-        css=APP_CSS,
-        head=APP_HEAD,
         favicon_path=APP_FAVICON_PATH,
     )
