@@ -101,6 +101,10 @@ class TrainTests(FakeApplio):
         os.makedirs(self.dataset)
 
     def test_runs_the_four_steps_in_order_and_returns_verified_artifacts(self):
+        # 90e beside 100e: the pick must compare epochs as numbers -- a
+        # lexicographic sort chose 90e the first time a run crossed three
+        # digits.
+        self.touch("logs", "narrator", "narrator_90e_2070s.pth")
         self.touch("logs", "narrator", "narrator_200e_4600s.pth")
         self.touch("logs", "narrator", "trained.index")
         calls = []

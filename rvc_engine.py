@@ -13,6 +13,7 @@ reason is the unattended failure mode this repo keeps paying for.
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 from typing import Optional
 
@@ -121,12 +122,17 @@ def trained_artifacts(model_name: str, applio_root: Optional[str] = None) -> dic
     model_dir = os.path.join(root, "logs", model_name)
     pth = None
     index = None
+    best_epoch = -1
     if os.path.isdir(model_dir):
         for name in sorted(os.listdir(model_dir)):
             # Exported inference weights are {model_name}_{epoch}e_{step}s.pth;
             # G_*/D_* are training checkpoints and are not loadable for infer.
-            # sorted() + last-wins keeps the highest epoch when several exist.
-            if name.startswith(f"{model_name}_") and name.endswith(".pth"):
+            # The epoch is compared as a NUMBER: a lexicographic pick chose
+            # 90e over 100e the first time a run crossed three digits.
+            match = re.fullmatch(
+                re.escape(model_name) + r"_(\d+)e_\d+s\.pth", name)
+            if match and int(match.group(1)) > best_epoch:
+                best_epoch = int(match.group(1))
                 pth = os.path.join(model_dir, name)
             elif name.endswith(".index"):
                 index = os.path.join(model_dir, name)
