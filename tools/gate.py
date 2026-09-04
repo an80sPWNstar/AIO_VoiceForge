@@ -37,7 +37,7 @@ TESTS = os.path.join(REPO, "tests")
 # The suite has only ever grown. A drop means tests stopped being collected --
 # usually a renamed file or an import that quietly died -- which is invisible
 # in a run that otherwise reports all green. Raise it when the suite grows.
-TEST_COUNT_FLOOR = 387
+TEST_COUNT_FLOOR = 392
 
 # indextts/ is the vendored upstream engine and archive/ is kept for
 # reference; neither is ours to fix, and F821 fires in both.
