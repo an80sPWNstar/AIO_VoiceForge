@@ -101,7 +101,7 @@ class TrainTests(FakeApplio):
         os.makedirs(self.dataset)
 
     def test_runs_the_four_steps_in_order_and_returns_verified_artifacts(self):
-        self.touch("logs", "narrator", "narrator.pth")
+        self.touch("logs", "narrator", "narrator_200e_4600s.pth")
         self.touch("logs", "narrator", "trained.index")
         calls = []
         with mock.patch.object(subprocess, "run",
@@ -110,7 +110,7 @@ class TrainTests(FakeApplio):
                                          applio_root=self.root)
         steps = [cmd[2] for cmd in calls]
         self.assertEqual(steps, ["preprocess", "extract", "train", "index"])
-        self.assertTrue(artifacts["model_path"].endswith("narrator.pth"))
+        self.assertTrue(artifacts["model_path"].endswith("narrator_200e_4600s.pth"))
         self.assertTrue(artifacts["index_path"].endswith("trained.index"))
 
     def test_a_clean_chain_with_no_weights_on_disk_is_a_failure(self):

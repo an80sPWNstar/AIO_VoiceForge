@@ -119,17 +119,22 @@ def trained_artifacts(model_name: str, applio_root: Optional[str] = None) -> dic
     """
     root = applio_root or rvc_paths.APPLIO_ROOT
     model_dir = os.path.join(root, "logs", model_name)
-    pth = os.path.join(model_dir, f"{model_name}.pth")
+    pth = None
     index = None
     if os.path.isdir(model_dir):
         for name in sorted(os.listdir(model_dir)):
-            if name.endswith(".index"):
+            # Exported inference weights are {model_name}_{epoch}e_{step}s.pth;
+            # G_*/D_* are training checkpoints and are not loadable for infer.
+            # sorted() + last-wins keeps the highest epoch when several exist.
+            if name.startswith(f"{model_name}_") and name.endswith(".pth"):
+                pth = os.path.join(model_dir, name)
+            elif name.endswith(".index"):
                 index = os.path.join(model_dir, name)
-                break
-    missing = [p for p in (pth, index) if not p or not os.path.isfile(p)]
-    if missing or index is None:
+    if pth is None or index is None:
         raise RVCError(
             f"Training left no usable artifacts for {model_name!r} in "
-            f"{model_dir}: expected {model_name}.pth and a .index file."
+            f"{model_dir}: expected {model_name}_<epoch>e_<step>s.pth and a "
+            f".index file. (A missing assets/config.json in the Applio "
+            f"install makes it skip the final weight export -- see rvc_paths.)"
         )
     return {"model_path": pth, "index_path": index}
