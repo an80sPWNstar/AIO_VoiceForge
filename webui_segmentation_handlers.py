@@ -42,7 +42,11 @@ import numpy as np
 import audio_segmentation as segmentation
 import character_store as store
 import webui_character_handlers as characters
+import webui_media_utils as media_utils
 from webui_progress import render_progress_bar
+
+# The most recent video-audio extraction this tab made (see scan_recording_ui).
+_LAST_EXTRACTED: Dict[str, Optional[str]] = {"path": None}
 
 # The table's columns. "#" is the segment's place in the recording, kept even
 # when the rows are sorted best-first, because it is how someone finds the
@@ -391,6 +395,24 @@ def scan_recording_ui(
     if not os.path.isfile(path):
         yield _scan_failed(f"That recording is no longer there: {path}")
         return
+
+    if media_utils.is_video_file(path):
+        try:
+            path = media_utils.ensure_audio_file(path)
+        except ValueError as exc:
+            yield _scan_failed(str(exc))
+            return
+        # The extracted wav must outlive this scan — segments are cut from it
+        # when the user picks one — so it cannot live in a scratch dir. Keep
+        # exactly one: each new extraction deletes its predecessor, bounding
+        # the temp-space cost to a single file instead of one per video.
+        previous = _LAST_EXTRACTED.get("path")
+        if previous and previous != path:
+            try:
+                os.remove(previous)
+            except OSError:
+                pass  # still open in the player, or already gone
+        _LAST_EXTRACTED["path"] = path
 
     yield _scan_outputs(
         [], None,

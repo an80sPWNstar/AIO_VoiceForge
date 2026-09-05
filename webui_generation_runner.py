@@ -67,6 +67,34 @@ def create_tts(runtime_options: Dict[str, Any]):
     )
 
 
+def _apply_lora(tts, request: Dict[str, Any]) -> None:
+    """Apply — or remove — the request's LoRA adapter on a V5 engine.
+
+    Called on EVERY request, empty path included: the engine worker is
+    persistent, so the previous request's adapter must never leak into this
+    one. V5's set_lora short-circuits when the path has not changed, so the
+    call is cheap in the steady state. Engines without set_lora (the pre-V5
+    checkout) only error when a LoRA was actually asked for.
+    """
+    lora_path = request.get("lora_path") or ""
+    strength = request.get("lora_strength")
+    strength = 1.0 if strength is None else float(strength)
+
+    if not hasattr(tts, "set_lora"):
+        if lora_path:
+            raise ValueError(
+                "This engine cannot load a LoRA adapter. Point INDEXTTS25_ROOT "
+                "at the V5 install to speak through trained voices."
+            )
+        return
+    if lora_path and not os.path.isfile(lora_path):
+        raise ValueError(
+            f"The character's LoRA adapter is missing on disk: {lora_path}. "
+            "Retrain the voice, or turn the trained voice off."
+        )
+    tts.set_lora(lora_path, strength)
+
+
 def convert_wav_to_mp3(
     wav_path: str,
     mp3_path: str,
@@ -190,6 +218,8 @@ def run_generation_request(
     # it blindly would silently create an attribute the engine never reads.
     if hasattr(tts, "hybrid_model_device"):
         tts.hybrid_model_device = low_memory_mode
+
+    _apply_lora(tts, request)
 
     try:
         subtitle_cues = parse_subtitle_file(subtitle_file) if subtitle_mode else []

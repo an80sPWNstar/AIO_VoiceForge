@@ -264,6 +264,85 @@ def train_character_ui(mode: str, slug: str, confirmed: bool, root: Optional[str
         f"Model: {result['artifacts']['model_path']}", root)
 
 
+def train_character_lora_ui(mode: str, slug: str, confirmed: bool,
+                            root: Optional[str] = None):
+    """Train TTS LoRA pressed. Same confirm-gated generator shape as
+    train_character_ui: the V5 pipeline (transcription, feature caching, DoRA
+    training) holds a GPU for anything from minutes to hours.
+    """
+    import character_training  # deferred, same reason as train_character_ui
+    import lora_engine
+    from character_dataset import DatasetExportError
+
+    if not slug:
+        yield _refresh(mode, slug, "Select a voice first.", root)
+        return
+    if not confirmed:
+        yield _refresh(mode, slug,
+                       "Tick 'Confirm training', then press Train TTS LoRA. "
+                       "This occupies a GPU until it finishes.", root)
+        return
+    if not lora_engine.engine_supports_lora():
+        yield _refresh(mode, slug,
+                       "The installed engine has no LoRA training pipeline. "
+                       "Point INDEXTTS25_ROOT at the V5 install.", root)
+        return
+
+    name = _name_of(slug, root) or slug
+    yield _refresh(mode, slug,
+                   f"Training a TTS voice model for {name!r}... transcription, "
+                   "feature caching and training can take hours. Progress "
+                   "prints in the console.", root)
+    try:
+        result = character_training.train_character_lora(
+            root or CHARACTER_LIBRARY_ROOT, slug)
+    except (DatasetExportError, lora_engine.LoraError) as exc:
+        yield _refresh(mode, slug, f"LoRA training failed: {exc}", root)
+        return
+    trained_seconds = result["manifest"]["total_seconds"]
+    yield _refresh(
+        mode, slug,
+        f"Trained {name!r} from {trained_seconds:.0f}s of clips. Adapter: "
+        f"{result['artifacts']['adapter_path']}. Turn on 'Speak with trained "
+        "voice' to hear it.", root)
+
+
+def on_lora_speak_change(enabled: bool, slug: str, strength,
+                         root: Optional[str] = None):
+    """The 'Speak with trained voice' controls (or the selection) changed.
+
+    Points the next generation at the character's adapter through the
+    selected_lora holder — the same no-new-gen_single-argument route the
+    device choice takes. Called with enabled=False this actively CLEARS the
+    holder, so a stale adapter can never haunt later generations.
+    """
+    from webui_runtime import selected_lora
+
+    strength = float(strength if strength is not None else 1.0)
+    if not enabled:
+        selected_lora.set("", strength)
+        return gr.update(value="Trained voice off. Generations use the "
+                               "reference audio alone.", visible=True)
+    if not slug:
+        selected_lora.set("", strength)
+        return gr.update(value="Select a voice first.", visible=True)
+
+    document = store.load_character(root or CHARACTER_LIBRARY_ROOT, slug)
+    block = (document or {}).get("lora") or {}
+    adapter_path = block.get("adapter_path")
+    if not adapter_path or not os.path.isfile(adapter_path):
+        selected_lora.set("", strength)
+        return gr.update(
+            value="This voice has no trained TTS model yet — press "
+                  "Train TTS LoRA first. Generations use the reference "
+                  "audio alone.", visible=True)
+
+    selected_lora.set(adapter_path, strength)
+    return gr.update(
+        value=f"Next generations speak through {os.path.basename(adapter_path)} "
+              f"(strength {strength:.2f}).", visible=True)
+
+
 def use_character_ui(mode: str, slug: str, root: Optional[str] = None):
     """Use This Voice pressed: load the default clip into the reference slot."""
     if mode == store.MODE_RVC:

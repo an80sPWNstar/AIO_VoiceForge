@@ -178,7 +178,6 @@ from webui_handlers import (
     reset_voice_shaping_ui,
     send_cleaned_to_reference,
     send_fetched_to_reference,
-    CLEANUP_DEVICE_CHOICES,
     CLEANUP_LOG_LINES,
     CLEANUP_PROGRESS_IDLE,
     CLEANUP_SPEAKER_MODE_CHOICES,
@@ -191,8 +190,14 @@ from webui_handlers import (
     MEDIA_FETCH_GAIN_STEP_DB,
     MEDIA_FETCH_LOG_LINES,
     MEDIA_FETCH_OUTPUT_ROOT,
+    MAX_VOICE_ROWS,
+    VOICE_MODE_AUTO,
+    VOICE_MODE_CHOICES,
     available_devices,
+    cleanup_default_device,
     cleanup_default_stages,
+    cleanup_device_choices,
+    cleanup_device_note,
     cleanup_preset_choices,
     cleanup_preset_description,
     cleanup_run_ui,
@@ -207,13 +212,16 @@ from webui_handlers import (
     media_fetch_quality_choices,
     media_fetch_quality_description,
     media_fetch_run_ui,
+    on_cleanup_device_change,
     on_cleanup_preset_change,
     on_cleanup_speaker_mode_change,
     on_device_change,
     on_engine_idle_change,
     on_media_fetch_quality_change,
+    save_voice_reference_ui,
     unload_engine_worker,
     update_prompt_audio,
+    voice_extract_run_ui,
 )
 from webui_preset_normalize import (
     _build_subtitle_status_for_preset,
@@ -407,6 +415,10 @@ with gr.Blocks(title=APP_TITLE, theme=theme, css=APP_CSS, head=APP_HEAD) as demo
                             character_train_btn = gr.Button(
                                 "Train RVC Model", variant="secondary",
                                 elem_classes=["action-button"])
+                        with gr.Row():
+                            character_lora_btn = gr.Button(
+                                "Train TTS LoRA", variant="secondary",
+                                elem_classes=["action-button"])
                         # Deleting a library entry is not undoable, so the button
                         # arms on the first press the same way cancel does.
                         character_delete_confirm = gr.Checkbox(
@@ -417,9 +429,20 @@ with gr.Blocks(title=APP_TITLE, theme=theme, css=APP_CSS, head=APP_HEAD) as demo
                         # the same way: tick, then press Train.
                         character_train_confirm = gr.Checkbox(
                             label="Confirm training", value=False, visible=True,
-                            info="Tick this, then press Train RVC Model. "
+                            info="Tick this, then press a Train button. "
                                  "Uses every clip this voice holds.",
                         )
+                        with gr.Row():
+                            character_lora_speak = gr.Checkbox(
+                                label="Speak with trained voice (LoRA)",
+                                value=False,
+                                info="The TTS itself speaks the trained voice "
+                                     "— pace and style included.",
+                            )
+                            character_lora_strength = gr.Slider(
+                                label="Trained voice strength",
+                                minimum=0.0, maximum=2.0, step=0.05, value=1.0,
+                            )
                         character_status = gr.Textbox(
                             label="Character Library Status",
                             value="", interactive=False, visible=False,
@@ -1434,7 +1457,11 @@ with gr.Blocks(title=APP_TITLE, theme=theme, css=APP_CSS, head=APP_HEAD) as demo
             "is left is one clean speaker. Runs on the extracted file above, or "
             "on a file you upload."
         )
-        cl_env_note = gr.Markdown(audio_cleanup.cleanup_environment_note())
+        # Probed for the card the Run-on radio actually defaults to, not for
+        # bare "cuda": on a machine whose first card the sidecar cannot use,
+        # the two would otherwise contradict each other at startup.
+        cl_env_note = gr.Markdown(
+            audio_cleanup.cleanup_environment_note(cleanup_default_device()))
 
         with gr.Row(equal_height=False):
             with gr.Column(scale=1, min_width=320):
@@ -1447,12 +1474,28 @@ with gr.Blocks(title=APP_TITLE, theme=theme, css=APP_CSS, head=APP_HEAD) as demo
                     cl_preset_note = gr.Markdown(
                         cleanup_preset_description(cleanup_shared.DEFAULT_PRESET_KEY)
                     )
+                    cl_device = gr.Radio(
+                        label="Run on",
+                        choices=cleanup_device_choices(),
+                        value=cleanup_default_device(),
+                    )
+                    _cl_device_note = cleanup_device_note()
+                    if _cl_device_note:
+                        gr.Markdown(_cl_device_note)
             with gr.Column(scale=1, min_width=320):
                 with gr.Group():
-                    cl_upload = gr.Audio(
-                        label="Clean a different file instead (optional)",
+                    cl_upload = gr.File(
+                        label="Clean a different file instead (optional, audio or video)",
+                        file_count="single",
+                        file_types=MEDIA_FILE_TYPES,
                         type="filepath",
-                        sources=["upload", "microphone"],
+                    )
+                    cl_voice_mode = gr.Radio(
+                        label="Voice selection",
+                        choices=VOICE_MODE_CHOICES,
+                        value=VOICE_MODE_AUTO,
+                        info="Manual stops after analysis and lists every "
+                             "voice it hears, so you pick the one to extract.",
                     )
 
         with gr.Row():
@@ -1520,15 +1563,48 @@ with gr.Blocks(title=APP_TITLE, theme=theme, css=APP_CSS, head=APP_HEAD) as demo
                     choices=[media_fetch.CHANNEL_MONO, media_fetch.CHANNEL_STEREO],
                     value=media_fetch.CHANNEL_MONO,
                 )
-                cl_device = gr.Radio(
-                    label="Run on",
-                    choices=CLEANUP_DEVICE_CHOICES,
-                    value=cleanup_shared.DEFAULT_DEVICE,
-                )
             cl_keep_intermediates = gr.Checkbox(
                 label="Keep each step's output file (for comparing)",
                 value=False,
             )
+
+        # Manual voice selection. The whole group stays hidden until an
+        # analysis run fills it; its state survives until the next analysis or
+        # a page reload, so several voices can be extracted from one clip.
+        cl_voices_state = gr.State(None)
+        with gr.Group(visible=False) as cl_voices_group:
+            gr.Markdown("#### Voices heard in this clip")
+            cl_voice_labels = []
+            cl_voice_players = []
+            for _voice_slot in range(MAX_VOICE_ROWS):
+                with gr.Row():
+                    cl_voice_labels.append(gr.Markdown(visible=False))
+                    cl_voice_players.append(gr.Audio(
+                        type="filepath", visible=False, show_label=False,
+                        scale=2))
+            with gr.Row():
+                cl_voice_pick = gr.Radio(
+                    label="Voice to extract", choices=[], value=None, scale=2)
+                cl_extract_btn = gr.Button(
+                    "Extract Selected Voice", variant="primary", scale=1)
+            with gr.Row():
+                with gr.Column(scale=1):
+                    cl_reference_audio = gr.Audio(
+                        label="Best reference clip (15s or less)",
+                        type="filepath")
+                    cl_reference_path = gr.Textbox(
+                        label="Reference saved to", value="",
+                        interactive=False, lines=1)
+                with gr.Column(scale=1):
+                    cl_voice_save_target = gr.Markdown(
+                        segmentation_handlers.describe_save_target(_char_name0))
+                    cl_voice_save_name = gr.Textbox(
+                        label="Label for the saved clip (optional)", value="",
+                        lines=1)
+                    cl_voice_save_btn = gr.Button("Save Reference to Voice")
+                    cl_voice_save_status = gr.Textbox(
+                        label="Status", value="", interactive=False, lines=2,
+                        visible=False)
 
         with gr.Row():
             with gr.Column(scale=1):
@@ -1559,10 +1635,11 @@ with gr.Blocks(title=APP_TITLE, theme=theme, css=APP_CSS, head=APP_HEAD) as demo
         with gr.Row(equal_height=False):
             with gr.Column(scale=1, min_width=320):
                 with gr.Group():
-                    sg_upload = gr.Audio(
-                        label="Scan a different file instead (optional)",
+                    sg_upload = gr.File(
+                        label="Scan a different file instead (optional, audio or video)",
+                        file_count="single",
+                        file_types=MEDIA_FILE_TYPES,
                         type="filepath",
-                        sources=["upload", "microphone"],
                     )
             with gr.Column(scale=1, min_width=320):
                 with gr.Group():
@@ -1887,6 +1964,14 @@ with gr.Blocks(title=APP_TITLE, theme=theme, css=APP_CSS, head=APP_HEAD) as demo
         show_progress="hidden",
     )
 
+    cl_device.change(
+        on_cleanup_device_change,
+        inputs=[cl_device],
+        outputs=[cl_env_note],
+        queue=False,
+        show_progress="hidden",
+    )
+
     cl_run_btn.click(
         cleanup_run_ui,
         inputs=[
@@ -1903,9 +1988,30 @@ with gr.Blocks(title=APP_TITLE, theme=theme, css=APP_CSS, head=APP_HEAD) as demo
             cl_channels,
             cl_device,
             cl_keep_intermediates,
+            cl_voice_mode,
         ],
-        outputs=[cl_progress, cl_result_audio, cl_result_path, cl_notes, cl_log],
+        outputs=[cl_progress, cl_result_audio, cl_result_path, cl_notes,
+                 cl_log, cl_voices_state, cl_voice_pick, cl_voices_group]
+                + cl_voice_players + cl_voice_labels,
         show_progress="minimal",
+    )
+
+    cl_extract_btn.click(
+        voice_extract_run_ui,
+        inputs=[cl_voices_state, cl_voice_pick, cl_stages,
+                cl_speaker_threshold, cl_sample_rate, cl_channels, cl_device],
+        outputs=[cl_progress, cl_result_audio, cl_result_path,
+                 cl_reference_audio, cl_reference_path, cl_notes, cl_log],
+        show_progress="minimal",
+    )
+
+    cl_voice_save_btn.click(
+        save_voice_reference_ui,
+        inputs=[character_mode, character_select, cl_reference_path,
+                cl_voice_save_name],
+        outputs=[character_select, character_name, character_summary,
+                 cl_voice_save_status],
+        queue=False,
     )
 
 
@@ -1972,6 +2078,13 @@ with gr.Blocks(title=APP_TITLE, theme=theme, css=APP_CSS, head=APP_HEAD) as demo
     # is echoed beside the save button. character_name already holds the
     # resolved name and is refreshed by every control that can change it.
     for _character_event in (character_name.change, character_select.change):
+        _character_event(
+            segmentation_handlers.describe_save_target,
+            inputs=[character_name],
+            outputs=[cl_voice_save_target],
+            queue=False,
+            show_progress="hidden",
+        )
         _character_event(
             segmentation_handlers.describe_save_target,
             inputs=[character_name],
@@ -2119,6 +2232,27 @@ with gr.Blocks(title=APP_TITLE, theme=theme, css=APP_CSS, head=APP_HEAD) as demo
         outputs=[character_select, character_name, character_summary, character_status],
         queue=True,
     )
+
+    character_lora_btn.click(
+        character_handlers.train_character_lora_ui,
+        inputs=[character_mode, character_select, character_train_confirm],
+        outputs=[character_select, character_name, character_summary, character_status],
+        queue=True,
+    )
+
+    # Selection changes re-run the toggle handler so the holder always points
+    # at the CURRENT character's adapter — or clears when it has none.
+    for _lora_event in (character_lora_speak.change,
+                        character_lora_strength.release,
+                        character_select.change):
+        _lora_event(
+            character_handlers.on_lora_speak_change,
+            inputs=[character_lora_speak, character_select,
+                    character_lora_strength],
+            outputs=[character_status],
+            queue=False,
+            show_progress="hidden",
+        )
 
     character_save_btn.click(
         character_handlers.save_reference_as_new_voice_ui,

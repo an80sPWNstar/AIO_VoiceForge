@@ -65,6 +65,39 @@ class DeviceSelection:
 selected_device = DeviceSelection()
 
 
+class LoraSelection:
+    """Holds the LoRA adapter the next generation should speak through.
+
+    Same shape as DeviceSelection and for the same reason: the adapter is
+    applied in the generation subprocess, so the choice cannot travel down
+    gen_single's call stack; the request builder reads it back out here.
+    An empty path means "no adapter" and actively REMOVES one a previous
+    request applied — the engine worker is persistent.
+    """
+
+    def __init__(self):
+        self._path = ""
+        self._strength = 1.0
+        self._lock = threading.Lock()
+
+    def get(self):
+        with self._lock:
+            return self._path, self._strength
+
+    def set(self, path, strength):
+        """Store the pair; returns True when either actually changed."""
+        path = path or ""
+        strength = float(strength)
+        with self._lock:
+            if (path, strength) == (self._path, self._strength):
+                return False
+            self._path, self._strength = path, strength
+            return True
+
+
+selected_lora = LoraSelection()
+
+
 def _build_tts_runtime_options():
     # "auto" means leave device unset so IndexTTS2 picks it the way it always
     # has; anything else is an explicit user choice from the device dropdown.

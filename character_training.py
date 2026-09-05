@@ -10,11 +10,13 @@ Blocks for the whole run -- minutes to hours depending on the dataset and
 epochs -- so UI callers run it on a worker thread, same as generation.
 """
 
+import os
 import tempfile
 from typing import Any, Dict, Optional
 
 import character_dataset
 import character_store
+import lora_engine
 import rvc_engine
 
 
@@ -53,5 +55,44 @@ def train_character(root: str, slug: str, *,
         "transpose": (document.get("rvc") or {}).get("transpose", 0),
     }
     document["rvc"]["trained_from_seconds"] = manifest["total_seconds"]
+    character_store.save_character(root, slug, document, now=now)
+    return {"manifest": manifest, "artifacts": artifacts}
+
+
+def train_character_lora(root: str, slug: str, *,
+                         work_root: Optional[str] = None,
+                         progress_callback=None,
+                         now: Optional[float] = None) -> Dict[str, Any]:
+    """Export the character's clips, run the V5 LoRA pipeline, store the
+    adapter path. Returns {"manifest": ..., "artifacts": ...}."""
+    document = character_store.load_character(root, slug)
+    if document is None:
+        raise character_dataset.DatasetExportError(
+            f"No character named {slug!r} in the library.")
+
+    if not lora_engine.engine_supports_lora():
+        raise character_dataset.DatasetExportError(
+            "The installed engine has no LoRA training pipeline. "
+            "Point INDEXTTS25_ROOT at the V5 install.")
+
+    if work_root is None:
+        work_root = os.path.join(root, slug, "lora_training")
+
+    clips_export_dir = os.path.join(work_root, "clips")
+    manifest = character_dataset.export_dataset(root, slug, clips_export_dir, now=now)
+    artifacts = lora_engine.train_lora_full(
+        clips_dir=clips_export_dir,
+        name=f"voiceforge_{slug}",
+        work_root=work_root,
+        progress_callback=progress_callback,
+    )
+
+    document = character_store.load_character(root, slug)
+    document["lora"] = {
+        "adapter_path": artifacts["adapter_path"],
+        "strength": (document.get("lora") or {}).get("strength", 1.0),
+        "trained_from_seconds": manifest["total_seconds"],
+        "samples_dir": artifacts["samples_dir"],
+    }
     character_store.save_character(root, slug, document, now=now)
     return {"manifest": manifest, "artifacts": artifacts}

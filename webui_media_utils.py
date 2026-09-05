@@ -125,17 +125,63 @@ def convert_wav_to_mp3(wav_path, mp3_path, bitrate="256k", remove_source=True):
         print(f"Error converting to MP3: {e}")
         return wav_path
 
-def extract_audio_from_media(media_path, output_path=None, sample_rate=24000):
-    """Extract audio from video/audio file and convert to acceptable format using FFmpeg."""
+# The audio half of webui_assets.MEDIA_FILE_TYPES. Kept as the ALLOW list:
+# the picker's "video" shorthand admits any video/* MIME type, so a video
+# extension whitelist silently passes unlisted containers (.mpg, .m4v, .ts)
+# straight to decoders that cannot read them.
+AUDIO_EXTENSIONS = frozenset({
+    ".mp3", ".wav", ".flac", ".ogg", ".m4a", ".wma", ".aac", ".opus",
+})
+
+
+def is_video_file(path):
+    """True when the file needs its audio track extracted before processing."""
+    extension = os.path.splitext(path or "")[1].lower()
+    return bool(extension) and extension not in AUDIO_EXTENSIONS
+
+
+def ensure_audio_file(path, sample_rate=44100, output_dir=None):
+    """Return `path` unchanged for audio; extract to a wav for anything else.
+
+    Keeps the source channel layout: the separation models downstream are
+    stereo-native, and the pipeline applies its own channel mode at the end.
+    `output_dir` places the extracted wav somewhere the caller manages; None
+    falls back to the system temp dir, which the caller is then responsible
+    for cleaning up — a full-length PCM wav of a long video is gigabytes.
+    Raises ValueError when the extraction fails, with a message fit for the UI.
+    """
+    if not is_video_file(path):
+        return path
+    output_path = None
+    if output_dir:
+        stem = os.path.splitext(os.path.basename(path))[0]
+        output_path = os.path.join(output_dir, f"{stem}_extracted.wav")
+    extracted = extract_audio_from_media(path, output_path=output_path,
+                                         sample_rate=sample_rate,
+                                         channels=None)
+    if extracted is None:
+        raise ValueError(
+            "Could not extract audio from the video file. Check that ffmpeg "
+            "is installed and the file is not corrupted."
+        )
+    return extracted
+
+
+def extract_audio_from_media(media_path, output_path=None, sample_rate=24000,
+                             channels=1):
+    """Extract audio from video/audio file and convert to acceptable format using FFmpeg.
+
+    `channels=None` keeps the source channel layout.
+    """
     if output_path is None:
         output_path = tempfile.mktemp(suffix=".wav")
 
     try:
         # Use FFmpeg subprocess directly for cross-platform compatibility
-        cmd = [
-            'ffmpeg', '-i', media_path,
-            '-ar', str(sample_rate),
-            '-ac', '1',  # mono
+        cmd = ['ffmpeg', '-i', media_path, '-ar', str(sample_rate)]
+        if channels is not None:
+            cmd += ['-ac', str(channels)]
+        cmd += [
             '-acodec', 'pcm_s16le',
             '-f', 'wav',
             output_path,

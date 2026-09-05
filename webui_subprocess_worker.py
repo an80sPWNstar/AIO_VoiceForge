@@ -12,15 +12,20 @@ CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 if CURRENT_DIR not in sys.path:
     sys.path.append(CURRENT_DIR)
 
-# This has to happen before webui_generation_runner is imported: that module
-# imports from `indextts` at module level, and the import has to land in the
-# IndexTTS-2.5 checkout rather than the 2.0 package still sitting in this repo.
 import engine_paths
-
-engine_paths.prepend_engine_to_sys_path()
-
 import engine_protocol
+
+# Import OUR runner while this repo is still first on sys.path: the V5 engine
+# root is a full app carrying its own webui_generation_runner.py, so once the
+# engine root is prepended, this import would resolve to Furkan's module
+# instead (measured 2026-09-05: his infer call collides with our request's
+# `lang` kwarg). Binding ours into sys.modules first makes it unshadowable.
 from webui_generation_runner import create_tts, run_generation_request
+
+# Prepended AFTER the runner import, and before any request runs: the runner's
+# only `indextts` import is lazy (inside create_tts), and it has to land in
+# the engine checkout rather than the 2.0 package still sitting in this repo.
+engine_paths.prepend_engine_to_sys_path()
 
 
 def parse_args() -> argparse.Namespace:

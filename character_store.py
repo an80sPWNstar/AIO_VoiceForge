@@ -119,6 +119,7 @@ def blank_character(name: str, mode: str, now: Optional[float] = None) -> Dict[s
         "notes": "",
         "oneshot": {"clips": [], "default_clip_id": None},
         "rvc": {"model_path": None, "index_path": None, "transpose": 0},
+        "lora": {"adapter_path": None, "strength": 1.0},
     }
 
 

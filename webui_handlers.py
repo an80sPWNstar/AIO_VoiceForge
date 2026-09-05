@@ -26,8 +26,10 @@ import threading
 import gradio as gr
 
 import audio_cleanup_shared as cleanup_shared
+import character_store as store
 import engine_worker
 import webui_audio_cleanup as audio_cleanup
+import webui_character_handlers as characters
 import webui_media_fetch as media_fetch
 import html
 import tempfile
@@ -407,10 +409,70 @@ CLEANUP_SPEAKER_MODE_CHOICES = [
     ("Keep whoever matches a voice sample", cleanup_shared.SPEAKER_MODE_SAMPLE),
 ]
 
-CLEANUP_DEVICE_CHOICES = [
-    ("GPU", cleanup_shared.DEFAULT_DEVICE),
-    ("CPU (slow)", cleanup_shared.DEVICE_CPU),
-]
+def cleanup_device_choices():
+    """Per-card choices for the cleanup tab, plus CPU.
+
+    Asked of the SIDECAR, which is what actually runs the models: a card the
+    app can see may still be newer than the sidecar torch's kernels (a
+    50-series card on torch 2.6/cu124 fails with "no kernel image"), so those
+    are listed but not selectable-as-usable. The cuda:N values line up across
+    the process boundary because both sides enumerate in the same default
+    CUDA order; the worker narrows CUDA_VISIBLE_DEVICES to the chosen index.
+    """
+    choices = []
+    for card in audio_cleanup.usable_cleanup_devices():
+        if card["ok"]:
+            choices.append((f"{card['name']} (cuda:{card['index']})",
+                            f"cuda:{card['index']}"))
+        else:
+            print(f"Cleanup cannot use {card['name']}: the cleanup engine's "
+                  "torch build has no kernels for it.")
+    choices.append(("CPU (slow)", cleanup_shared.DEVICE_CPU))
+    return choices
+
+
+def cleanup_default_device():
+    """The first card, or CPU when there is none."""
+    return cleanup_device_choices()[0][1]
+
+
+def cleanup_device_note():
+    """Names any card the cleanup engine cannot use.
+
+    Without this, a card missing from the list reads as a bug rather than a
+    fact about the engine's torch build.
+    """
+    unusable = sorted({card["name"]
+                       for card in audio_cleanup.usable_cleanup_devices()
+                       if not card["ok"]})
+    if not unusable:
+        return ""
+    return (f"_{', '.join(unusable)}: not selectable — the cleanup engine's "
+            "PyTorch build has no kernels for this card generation yet. "
+            "Voice generation on the other tab is unaffected._")
+
+
+def on_cleanup_device_change(device_value):
+    """Refresh the banner for the card cleanup will actually use.
+
+    Resolved from the startup probe's cache — a radio click must not cost a
+    sidecar torch-import subprocess to learn a name the cache already holds.
+    """
+    if device_value == cleanup_shared.DEVICE_CPU:
+        name = "CPU"
+    else:
+        index = cleanup_shared.cuda_index(device_value)
+        name = next(
+            (card["name"] for card in audio_cleanup.usable_cleanup_devices()
+             if card["index"] == index),
+            device_value,
+        )
+    return gr.update(value=f"Audio cleanup **ready** | compute: **{name}**")
+
+VOICE_MODE_AUTO = "Auto (keep the loudest voice)"
+VOICE_MODE_MANUAL = "Manual (pick from a list)"
+VOICE_MODE_CHOICES = [VOICE_MODE_AUTO, VOICE_MODE_MANUAL]
+MAX_VOICE_ROWS = cleanup_shared.MAX_VOICES_LISTED
 
 
 def cleanup_stage_choices():
@@ -457,6 +519,51 @@ def on_cleanup_speaker_mode_change(mode):
     return gr.update(visible=(mode == cleanup_shared.SPEAKER_MODE_SAMPLE))
 
 
+def voice_choice_label(voice) -> str:
+    """Format a voice dict as a label for display."""
+    voice_id = voice.get("id", 0)
+    share = voice.get("share", 0.0)
+    talk_seconds = voice.get("talk_seconds", 0.0)
+    return f"Voice {voice_id} — {share * 100:.0f}% of the speech ({talk_seconds:.0f}s)"
+
+
+def voice_row_updates(voices) -> list:
+    """Return a list of MAX_VOICE_ROWS gr.update()s for the preview audio slots."""
+    updates = []
+    for i in range(MAX_VOICE_ROWS):
+        if i < len(voices):
+            voice = voices[i]
+            preview_path = voice.get("preview")
+            updates.append(gr.update(value=preview_path, visible=True))
+        else:
+            updates.append(gr.update(value=None, visible=False))
+    return updates
+
+
+def voice_label_updates(voices) -> list:
+    """Return a list of MAX_VOICE_ROWS gr.update()s for the per-row markdown labels."""
+    updates = []
+    for i in range(MAX_VOICE_ROWS):
+        if i < len(voices):
+            voice = voices[i]
+            label = voice_choice_label(voice)
+            updates.append(gr.update(value=label, visible=True))
+        else:
+            updates.append(gr.update(value="", visible=False))
+    return updates
+
+
+def voice_id_from_choice(state, choice: str):
+    """Map a radio choice string back to the voice id via state["voices"]."""
+    if state is None or choice is None:
+        return None
+    voices = state.get("voices", [])
+    for voice in voices:
+        if voice_choice_label(voice) == choice:
+            return voice.get("id")
+    return None
+
+
 def cleanup_run_ui(
     fetched_path,
     uploaded_path,
@@ -471,36 +578,54 @@ def cleanup_run_ui(
     channel_mode,
     device,
     keep_intermediates,
+    voice_mode=VOICE_MODE_AUTO,
     progress=gr.Progress(),
 ):
     """Clean Up Audio button: stream progress, then report the cleaned file.
 
     Same shape as media_fetch_run_ui -- a generator draining a queue that a
     worker thread fills, so the log and bar update while the subprocess runs.
+
+    In AUTO mode, extraction runs once; in MANUAL mode, analysis extracts
+    available voices and waits for selection.
     """
     source = uploaded_path or fetched_path
     events = queue.Queue()
     outcome = {}
     finished = object()
 
+    is_manual_mode = voice_mode == VOICE_MODE_MANUAL
+
     def worker():
         try:
-            outcome["result"] = audio_cleanup.run_cleanup(
-                input_path=source,
-                output_root=MEDIA_FETCH_OUTPUT_ROOT,
-                stages=list(stages or []),
-                vocal_model=vocal_model,
-                dereverb_model=dereverb_model,
-                denoise_model=denoise_model,
-                speaker_mode=speaker_mode,
-                speaker_sample=speaker_sample,
-                speaker_threshold=float(speaker_threshold),
-                sample_rate=int(sample_rate),
-                channel_mode=channel_mode,
-                device=device,
-                keep_intermediates=bool(keep_intermediates),
-                progress_callback=events.put,
-            )
+            if is_manual_mode:
+                outcome["result"] = audio_cleanup.run_voice_analysis(
+                    input_path=source,
+                    output_root=MEDIA_FETCH_OUTPUT_ROOT,
+                    stages=list(stages or []),
+                    vocal_model=vocal_model,
+                    dereverb_model=dereverb_model,
+                    denoise_model=denoise_model,
+                    device=device,
+                    progress_callback=events.put,
+                )
+            else:
+                outcome["result"] = audio_cleanup.run_cleanup(
+                    input_path=source,
+                    output_root=MEDIA_FETCH_OUTPUT_ROOT,
+                    stages=list(stages or []),
+                    vocal_model=vocal_model,
+                    dereverb_model=dereverb_model,
+                    denoise_model=denoise_model,
+                    speaker_mode=speaker_mode,
+                    speaker_sample=speaker_sample,
+                    speaker_threshold=float(speaker_threshold),
+                    sample_rate=int(sample_rate),
+                    channel_mode=channel_mode,
+                    device=device,
+                    keep_intermediates=bool(keep_intermediates),
+                    progress_callback=events.put,
+                )
         except audio_cleanup.CleanupError as exc:
             outcome["error"] = str(exc)
         except Exception as exc:  # noqa: BLE001 - surfaced, never swallowed
@@ -521,8 +646,186 @@ def cleanup_run_ui(
         if event.fraction is not None:
             progress(event.fraction, desc=event.message)
             last_fraction = event.fraction
+
+        voice_state_update = gr.update()
+        voice_radio_update = gr.update()
+        voices_group_update = gr.update(visible=False)
+        voice_audio_updates = [gr.update(value=None, visible=False) for _ in range(MAX_VOICE_ROWS)]
+        voice_label_updates_list = [gr.update(value="", visible=False) for _ in range(MAX_VOICE_ROWS)]
+
         yield (
             gr.update(value=render_progress_bar(last_fraction, event.message)),
+            gr.update(),
+            gr.update(),
+            gr.update(),
+            gr.update(value="\n".join(lines[-CLEANUP_LOG_LINES:])),
+            voice_state_update,
+            voice_radio_update,
+            voices_group_update,
+            *voice_audio_updates,
+            *voice_label_updates_list,
+        )
+
+    thread.join(timeout=CLEANUP_THREAD_JOIN_SECONDS)
+
+    if "error" in outcome:
+        lines.append(outcome["error"])
+
+        voice_state_update = gr.update()
+        voice_radio_update = gr.update()
+        voices_group_update = gr.update(visible=False)
+        voice_audio_updates = [gr.update(value=None, visible=False) for _ in range(MAX_VOICE_ROWS)]
+        voice_label_updates_list = [gr.update(value="", visible=False) for _ in range(MAX_VOICE_ROWS)]
+
+        yield (
+            gr.update(value=render_progress_bar(
+                last_fraction, outcome["error"], failed=True)),
+            gr.update(value=None),
+            gr.update(value=CLEANUP_NO_RESULT),
+            gr.update(value=f"WARNING: {outcome['error']}"),
+            gr.update(value="\n".join(lines[-CLEANUP_LOG_LINES:])),
+            voice_state_update,
+            voice_radio_update,
+            voices_group_update,
+            *voice_audio_updates,
+            *voice_label_updates_list,
+        )
+        return
+
+    result = outcome["result"]
+
+    if is_manual_mode:
+        voices = result.get("voices", [])
+        choices = [voice_choice_label(v) for v in voices]
+        voice_state_value = {
+            "voices_dir": result.get("voices_dir"),
+            "voices": voices,
+            "source_name": os.path.basename(source),
+            "choices": choices,
+        }
+        voice_state_update = gr.update(value=voice_state_value)
+        voice_radio_update = gr.update(choices=choices, value=None)
+        voices_group_update = gr.update(visible=True)
+        voice_audio_updates = voice_row_updates(voices)
+        voice_label_updates_list = voice_label_updates(voices)
+
+        # The worker's notes carry reliability warnings (rough-guess split,
+        # unmatched speech) — they must reach the user, not just the log.
+        note_lines = list(result.get("notes") or [])
+        note_lines.append(
+            f"Found {len(voices)} voice(s). Play the previews, pick one, "
+            "then press Extract.")
+        notes = "\n".join(note_lines)
+        status = f"Analyzed {os.path.basename(source)}"
+        progress(1.0, desc=status)
+
+        yield (
+            gr.update(value=render_progress_bar(1.0, status, done=True)),
+            gr.update(value=None),
+            gr.update(value=CLEANUP_NO_RESULT),
+            gr.update(value=notes),
+            gr.update(value="\n".join(lines[-CLEANUP_LOG_LINES:])),
+            voice_state_update,
+            voice_radio_update,
+            voices_group_update,
+            *voice_audio_updates,
+            *voice_label_updates_list,
+        )
+    else:
+        audio_path = result["audio_path"]
+        notes = "\n".join(result.get("notes", [])) or "Cleaned."
+        status = f"Saved {os.path.basename(audio_path)}"
+        progress(1.0, desc=status)
+
+        voice_state_update = gr.update()
+        voice_radio_update = gr.update()
+        voices_group_update = gr.update(visible=False)
+        voice_audio_updates = [gr.update(value=None, visible=False) for _ in range(MAX_VOICE_ROWS)]
+        voice_label_updates_list = [gr.update(value="", visible=False) for _ in range(MAX_VOICE_ROWS)]
+
+        yield (
+            gr.update(value=render_progress_bar(1.0, status, done=True)),
+            gr.update(value=audio_path),
+            gr.update(value=audio_path),
+            gr.update(value=notes),
+            gr.update(value="\n".join(lines[-CLEANUP_LOG_LINES:])),
+            voice_state_update,
+            voice_radio_update,
+            voices_group_update,
+            *voice_audio_updates,
+            *voice_label_updates_list,
+        )
+
+
+def voice_extract_run_ui(
+    voices_state,
+    choice,
+    stages,
+    speaker_threshold,
+    sample_rate,
+    channel_mode,
+    device,
+    progress=gr.Progress(),
+):
+    """Extract the selected voice and produce both full and reference clips.
+
+    Same shape as cleanup_run_ui -- a generator draining a queue that a
+    worker thread fills, so the log and bar update while the subprocess runs.
+    """
+    events = queue.Queue()
+    outcome = {}
+    finished = object()
+
+    def worker():
+        try:
+            if voices_state is None:
+                outcome["error"] = "Process a clip in manual mode first."
+                return
+
+            voice_id = voice_id_from_choice(voices_state, choice)
+            if voice_id is None:
+                outcome["error"] = "Pick a voice from the list first."
+                return
+
+            voices_dir = voices_state.get("voices_dir")
+            source_name = voices_state.get("source_name", "audio")
+
+            outcome["result"] = audio_cleanup.run_voice_extract(
+                voices_dir=voices_dir,
+                voice_id=voice_id,
+                source_name=source_name,
+                output_root=MEDIA_FETCH_OUTPUT_ROOT,
+                stages=list(stages or []),
+                speaker_threshold=float(speaker_threshold),
+                sample_rate=int(sample_rate),
+                channel_mode=channel_mode,
+                device=device,
+                progress_callback=events.put,
+            )
+        except audio_cleanup.CleanupError as exc:
+            outcome["error"] = str(exc)
+        except Exception as exc:  # noqa: BLE001 - surfaced, never swallowed
+            outcome["error"] = f"Unexpected {type(exc).__name__}: {exc}"
+        finally:
+            events.put(finished)
+
+    thread = threading.Thread(target=worker, daemon=True, name="voice-extract")
+    thread.start()
+
+    lines = []
+    last_fraction = 0.0
+    while True:
+        event = events.get()
+        if event is finished:
+            break
+        lines.append(event.message)
+        if event.fraction is not None:
+            progress(event.fraction, desc=event.message)
+            last_fraction = event.fraction
+        yield (
+            gr.update(value=render_progress_bar(last_fraction, event.message)),
+            gr.update(),
+            gr.update(),
             gr.update(),
             gr.update(),
             gr.update(),
@@ -538,23 +841,48 @@ def cleanup_run_ui(
                 last_fraction, outcome["error"], failed=True)),
             gr.update(value=None),
             gr.update(value=CLEANUP_NO_RESULT),
+            gr.update(value=None),
+            gr.update(value=CLEANUP_NO_RESULT),
             gr.update(value=f"WARNING: {outcome['error']}"),
             gr.update(value="\n".join(lines[-CLEANUP_LOG_LINES:])),
         )
         return
 
     result = outcome["result"]
-    audio_path = result["audio_path"]
-    notes = "\n".join(result.get("notes", [])) or "Cleaned."
+    audio_path = result.get("audio_path")
+    reference_path = result.get("reference_path")
+    notes = "\n".join(result.get("notes", [])) or "Extracted."
     status = f"Saved {os.path.basename(audio_path)}"
     progress(1.0, desc=status)
     yield (
         gr.update(value=render_progress_bar(1.0, status, done=True)),
         gr.update(value=audio_path),
         gr.update(value=audio_path),
+        gr.update(value=reference_path),
+        gr.update(value=reference_path),
         gr.update(value=notes),
         gr.update(value="\n".join(lines[-CLEANUP_LOG_LINES:])),
     )
+
+
+def save_voice_reference_ui(mode, slug, reference_path, label, root=None):
+    """Save Reference To Voice pressed: file a reference clip under a voice.
+
+    Mirrors save_segment_to_voice_ui in webui_segmentation_handlers.py.
+    Returns the standard four panel outputs.
+    """
+    if mode == store.MODE_RVC:
+        return characters.refresh_panel(
+            mode, slug, "An RVC voice holds a model, not clips.", root)
+    if not slug:
+        return characters.refresh_panel(mode, slug, "Select a voice first.", root)
+    if not reference_path or not os.path.isfile(reference_path):
+        return characters.refresh_panel(
+            mode, slug, "Extract a voice first.", root)
+
+    return characters.add_reference_to_character_ui(
+        mode, slug, reference_path,
+        label or os.path.basename(reference_path), root)
 
 
 # ---------------------------------------------------------------------------

@@ -25,6 +25,7 @@ from typing import Callable, Dict, List, Optional
 
 import audio_cleanup_shared as shared
 import webui_media_fetch as media_fetch
+import webui_media_utils as media_utils
 
 
 # --------------------------------------------------------------------------
@@ -104,26 +105,93 @@ def cleanup_available() -> bool:
     return sidecar_python() is not None and media_fetch.ffmpeg_available()
 
 
-def cleanup_environment_note() -> str:
-    """One-line readiness note for the UI."""
+def cleanup_environment_note(device: str = shared.DEFAULT_DEVICE) -> str:
+    """One-line readiness note for the UI, for the card cleanup would use."""
     python_path = sidecar_python()
     if python_path is None:
         return "Audio cleanup **not installed** - " + SETUP_HINT
     parts = ["Audio cleanup **ready**"]
-    device = _probe_device(python_path)
-    parts.append(f"compute: **{device}**")
+    name = _probe_device(python_path, device)
+    parts.append(f"compute: **{name}**")
     return " | ".join(parts)
 
 
-def _probe_device(python_path: str) -> str:
-    """Ask the sidecar interpreter whether it can see a GPU.
+# Probed once per process: the answer costs a sidecar torch import (seconds)
+# and cannot change without swapping hardware or reinstalling the sidecar.
+_USABLE_DEVICES_CACHE: Optional[List[Dict]] = None
+
+
+def usable_cleanup_devices() -> List[Dict]:
+    """Cards the SIDECAR torch can actually run kernels on.
+
+    Asked of the sidecar, not the app: the two have different torch builds,
+    and a card the app can enumerate may be newer than the sidecar's compiled
+    kernel set (measured 2026-09-05: app lists a 50-series card, sidecar
+    torch 2.6/cu124 fails on it with "no kernel image"). Returns
+    [{"index", "name", "ok"}]; empty when the sidecar is missing or the probe
+    fails, which callers treat as "offer CPU only".
+    """
+    global _USABLE_DEVICES_CACHE
+    if _USABLE_DEVICES_CACHE is not None:
+        return _USABLE_DEVICES_CACHE
+    python_path = sidecar_python()
+    if python_path is None:
+        _USABLE_DEVICES_CACHE = []
+        return _USABLE_DEVICES_CACHE
+    probe = (
+        "import json, torch\n"
+        "rows = []\n"
+        "if torch.cuda.is_available():\n"
+        "    archs = set(torch.cuda.get_arch_list())\n"
+        "    for i in range(torch.cuda.device_count()):\n"
+        "        cap = torch.cuda.get_device_capability(i)\n"
+        "        rows.append({'index': i,\n"
+        "                     'name': torch.cuda.get_device_name(i),\n"
+        "                     'ok': f'sm_{cap[0]}{cap[1]}' in archs})\n"
+        "print(json.dumps(rows))\n"
+    )
+    try:
+        result = subprocess.run(
+            [python_path, "-c", probe],
+            capture_output=True, text=True,
+            timeout=media_fetch.FFPROBE_TIMEOUT_SECONDS,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        # Failures are cached too: three UI-build callers each re-running a
+        # 60s-timeout probe turns one broken sidecar into minutes of hang.
+        print(f"Cleanup device probe failed: {type(exc).__name__}: {exc}")
+        _USABLE_DEVICES_CACHE = []
+        return _USABLE_DEVICES_CACHE
+    if result.returncode != 0:
+        print(f"Cleanup device probe exited {result.returncode}: "
+              f"{(result.stderr or '').strip()[-300:]}")
+        _USABLE_DEVICES_CACHE = []
+        return _USABLE_DEVICES_CACHE
+    for line in reversed(result.stdout.strip().splitlines()):
+        try:
+            _USABLE_DEVICES_CACHE = json.loads(line)
+            return _USABLE_DEVICES_CACHE
+        except ValueError:
+            continue
+    print("Cleanup device probe returned no parseable result.")
+    _USABLE_DEVICES_CACHE = []
+    return _USABLE_DEVICES_CACHE
+
+
+def _probe_device(python_path: str, device: str = shared.DEFAULT_DEVICE) -> str:
+    """Ask the sidecar interpreter what `device` resolves to.
 
     Reported rather than assumed: the sidecar has its own torch build, so the
     app's CUDA availability says nothing about the cleanup environment's.
     """
+    if device == shared.DEVICE_CPU:
+        return "CPU"
+    index = shared.cuda_index(device) or 0
     probe = (
         "import torch;"
-        "print(torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'CPU')"
+        f"print(torch.cuda.get_device_name({index})"
+        f" if torch.cuda.is_available() and torch.cuda.device_count() > {index}"
+        " else 'CPU')"
     )
     try:
         result = subprocess.run(
@@ -229,6 +297,133 @@ def build_worker_command(
     return command
 
 
+def build_analyze_command(
+    python_path: str,
+    input_path: str,
+    output_path: str,
+    voices_dir: str,
+    stages: List[str],
+    progress_path: str,
+    vocal_model: str,
+    dereverb_model: str,
+    denoise_model: str,
+    device: str,
+) -> List[str]:
+    """Build the worker argv for analyze mode. Pure: builds a list, runs nothing."""
+    command = [
+        python_path,
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), WORKER_SCRIPT),
+        "--mode", "analyze",
+        "--input", input_path,
+        "--output", output_path,
+        "--voices-dir", voices_dir,
+        "--stages", ",".join(stages),
+        "--progress-file", progress_path,
+        "--model-dir", model_cache_dir(),
+        "--device", device,
+        "--vocal-model", vocal_model,
+        "--dereverb-model", dereverb_model,
+        "--denoise-model", denoise_model,
+    ]
+    return command
+
+
+def build_extract_command(
+    python_path: str,
+    input_path: str,
+    output_path: str,
+    reference_output: str,
+    voices_dir: str,
+    voice_id: int,
+    stages: List[str],
+    progress_path: str,
+    speaker_threshold: float,
+    sample_rate: int,
+    channel_mode: str,
+    device: str,
+) -> List[str]:
+    """Build the worker argv for extract mode. Pure: builds a list, runs nothing."""
+    command = [
+        python_path,
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), WORKER_SCRIPT),
+        "--mode", "extract",
+        "--input", input_path,
+        "--output", output_path,
+        "--reference-output", reference_output,
+        "--voices-dir", voices_dir,
+        "--voice-id", str(voice_id),
+        "--stages", ",".join(stages),
+        "--progress-file", progress_path,
+        # argparse marks --model-dir required even though extract mode only
+        # needs it for the encoder cache; omitting it kills the worker at
+        # argv parsing, before any error a user could act on.
+        "--model-dir", model_cache_dir(),
+        "--speaker-threshold", str(speaker_threshold),
+        "--sample-rate", str(sample_rate),
+        "--channel-mode", channel_mode,
+        "--device", device,
+    ]
+    return command
+
+
+def _run_worker(
+    command: List[str],
+    progress_path: str,
+    stdout_path: str,
+    stderr_path: str,
+    progress_callback: Optional[ProgressCallback],
+    finished_message: str,
+) -> Dict:
+    """Run the worker subprocess and collect its result.
+
+    Handles Popen, tail, deadline, drain, and _read_result. Returns the
+    parsed result dict from the worker's final JSON line.
+    """
+    def report(event: CleanupProgress) -> None:
+        if progress_callback is not None:
+            progress_callback(event)
+
+    report(CleanupProgress(None, finished_message, 0.0))
+
+    tail = _ProgressTail(progress_path)
+    log: List[str] = []
+
+    # Both streams go to FILES rather than pipes: the separation library logs
+    # steadily, and a pipe nobody is draining fills its buffer and deadlocks
+    # the worker at some unpredictable point mid-run.
+    try:
+        with open(stdout_path, "wb") as out, open(stderr_path, "wb") as err:
+            process = subprocess.Popen(
+                command,
+                stdout=out,
+                stderr=err,
+                cwd=os.path.dirname(os.path.abspath(__file__)),
+            )
+            deadline = time.monotonic() + CLEANUP_TIMEOUT_SECONDS
+            while process.poll() is None:
+                for event in tail.drain():
+                    log.append(event.message)
+                    report(event)
+                if time.monotonic() > deadline:
+                    process.kill()
+                    raise CleanupError(
+                        f"Cleanup did not finish within "
+                        f"{CLEANUP_TIMEOUT_SECONDS // 60} minutes and was stopped."
+                    )
+                time.sleep(PROGRESS_POLL_SECONDS)
+
+            for event in tail.drain():
+                log.append(event.message)
+                report(event)
+
+        result = _read_result(stdout_path, stderr_path, process.returncode)
+        report(CleanupProgress(None, "Finished", 1.0))
+        result["log"] = log
+        return result
+    except CleanupError:
+        raise
+
+
 def cleaned_output_path(source_path: str, output_root: str) -> str:
     """Return a unique path for the cleaned version of `source_path`."""
     directory = os.path.join(output_root, shared.CLEANUP_SUBDIR)
@@ -237,6 +432,33 @@ def cleaned_output_path(source_path: str, output_root: str) -> str:
         os.path.splitext(os.path.basename(source_path))[0] + shared.CLEANUP_SUFFIX
     )
     return media_fetch.unique_path(directory, stem, shared.CLEANUP_EXTENSION)
+
+
+def analysis_voices_dir(output_root: str, source_path: str) -> str:
+    """Return a unique directory for storing analyzed voices.
+
+    Creates the directory and returns its path. Same source stem will get
+    a numeric suffix to ensure uniqueness.
+    """
+    base_dir = os.path.join(output_root, shared.CLEANUP_SUBDIR, shared.VOICES_SUBDIR)
+    os.makedirs(base_dir, exist_ok=True)
+
+    source_stem = media_fetch.sanitize_filename(
+        os.path.splitext(os.path.basename(source_path))[0]
+    )
+
+    counter = 1
+    while True:
+        if counter == 1:
+            candidate_dir = os.path.join(base_dir, source_stem)
+        else:
+            candidate_dir = os.path.join(base_dir, f"{source_stem}_{counter}")
+
+        try:
+            os.makedirs(candidate_dir, exist_ok=False)
+            return candidate_dir
+        except FileExistsError:
+            counter += 1
 
 
 def run_cleanup(
@@ -281,13 +503,24 @@ def run_cleanup(
 
     output_path = cleaned_output_path(input_path, output_root)
     scratch = tempfile.mkdtemp(prefix="audio_cleanup_")
+
+    # Extraction lands in the scratch dir so the finally-rmtree reclaims it:
+    # a long video's PCM wav is gigabytes and used only for this one run.
+    worker_input = input_path
+    if media_utils.is_video_file(input_path):
+        try:
+            worker_input = media_utils.ensure_audio_file(
+                input_path, output_dir=scratch)
+        except ValueError as exc:
+            shutil.rmtree(scratch, ignore_errors=True)
+            raise CleanupError(str(exc))
     progress_path = os.path.join(scratch, "progress.jsonl")
     stdout_path = os.path.join(scratch, "stdout.txt")
     stderr_path = os.path.join(scratch, "stderr.txt")
 
     command = build_worker_command(
         python_path=python_path,
-        input_path=os.path.abspath(input_path),
+        input_path=os.path.abspath(worker_input),
         output_path=output_path,
         stages=ordered,
         progress_path=progress_path,
@@ -303,46 +536,17 @@ def run_cleanup(
         keep_intermediates=keep_intermediates,
     )
 
-    def report(event: CleanupProgress) -> None:
-        if progress_callback is not None:
-            progress_callback(event)
-
-    report(CleanupProgress(None, "Starting the cleanup engine", 0.0))
-
-    tail = _ProgressTail(progress_path)
-    log: List[str] = []
-
-    # Both streams go to FILES rather than pipes: the separation library logs
-    # steadily, and a pipe nobody is draining fills its buffer and deadlocks
-    # the worker at some unpredictable point mid-run.
     try:
-        with open(stdout_path, "wb") as out, open(stderr_path, "wb") as err:
-            process = subprocess.Popen(
-                command,
-                stdout=out,
-                stderr=err,
-                cwd=os.path.dirname(os.path.abspath(__file__)),
-            )
-            deadline = time.monotonic() + CLEANUP_TIMEOUT_SECONDS
-            while process.poll() is None:
-                for event in tail.drain():
-                    log.append(event.message)
-                    report(event)
-                if time.monotonic() > deadline:
-                    process.kill()
-                    raise CleanupError(
-                        f"Cleanup did not finish within "
-                        f"{CLEANUP_TIMEOUT_SECONDS // 60} minutes and was stopped."
-                    )
-                time.sleep(PROGRESS_POLL_SECONDS)
-
-            for event in tail.drain():
-                log.append(event.message)
-                report(event)
-
-        result = _read_result(stdout_path, stderr_path, process.returncode)
+        result = _run_worker(
+            command=command,
+            progress_path=progress_path,
+            stdout_path=stdout_path,
+            stderr_path=stderr_path,
+            progress_callback=progress_callback,
+            finished_message="Starting the cleanup engine",
+        )
         notes = result.get("notes", [])
-        report(CleanupProgress(None, "Cleanup finished", 1.0))
+        log = result.get("log", [])
         return {"audio_path": result["output"], "notes": notes, "log": log}
     finally:
         shutil.rmtree(scratch, ignore_errors=True)
@@ -389,3 +593,182 @@ def _tail_text(path: str, limit: int = 800) -> str:
     except OSError as exc:
         return f"(could not read {path}: {exc})"
     return text[-limit:] if text else "(none)"
+
+
+def run_voice_analysis(
+    input_path: str,
+    output_root: str,
+    stages: List[str],
+    vocal_model: str = shared.DEFAULT_VOCAL_MODEL,
+    dereverb_model: str = shared.DEFAULT_DEREVERB_MODEL,
+    denoise_model: str = shared.DEFAULT_DENOISE_MODEL,
+    device: str = shared.DEFAULT_DEVICE,
+    progress_callback: Optional[ProgressCallback] = None,
+) -> Dict:
+    """Analyze `input_path` to extract individual voices.
+
+    Returns {"voices_dir", "duration", "voices", "notes", "log"} where each
+    voice in the list has {"id", "talk_seconds", "share", "preview"}
+    (centroids are stripped and kept only in voices.json on disk).
+    """
+    if not input_path or not os.path.isfile(input_path):
+        raise CleanupError("Download or extract an audio file first.")
+
+    ordered = shared.ordered_stages(stages)
+    if not ordered:
+        raise CleanupError("Pick at least one cleanup step.")
+
+    python_path = sidecar_python()
+    if python_path is None:
+        raise CleanupError(SETUP_HINT)
+    if not media_fetch.ffmpeg_available():
+        raise CleanupError("ffmpeg is not on PATH, so the cleaned file cannot be written.")
+
+    voices_dir = analysis_voices_dir(output_root, input_path)
+    output_path = os.path.join(voices_dir, shared.VOICES_PROCESSED_FILENAME)
+    scratch = tempfile.mkdtemp(prefix="audio_analyze_")
+
+    # Same as run_cleanup: extraction lives and dies with the scratch dir. The
+    # worker copies what it needs into voices_dir as processed.wav.
+    worker_input = input_path
+    if media_utils.is_video_file(input_path):
+        try:
+            worker_input = media_utils.ensure_audio_file(
+                input_path, output_dir=scratch)
+        except ValueError as exc:
+            shutil.rmtree(scratch, ignore_errors=True)
+            raise CleanupError(str(exc))
+    progress_path = os.path.join(scratch, "progress.jsonl")
+    stdout_path = os.path.join(scratch, "stdout.txt")
+    stderr_path = os.path.join(scratch, "stderr.txt")
+
+    command = build_analyze_command(
+        python_path=python_path,
+        input_path=os.path.abspath(worker_input),
+        output_path=output_path,
+        voices_dir=voices_dir,
+        stages=ordered,
+        progress_path=progress_path,
+        vocal_model=vocal_model,
+        dereverb_model=dereverb_model,
+        denoise_model=denoise_model,
+        device=device,
+    )
+
+    try:
+        result = _run_worker(
+            command=command,
+            progress_path=progress_path,
+            stdout_path=stdout_path,
+            stderr_path=stderr_path,
+            progress_callback=progress_callback,
+            finished_message="Starting voice analysis",
+        )
+        log = result.get("log", [])
+
+        voices = result.get("voices", [])
+        for voice in voices:
+            if "centroid" in voice:
+                del voice["centroid"]
+
+        return {
+            "voices_dir": voices_dir,
+            "duration": result.get("duration", 0.0),
+            "voices": voices,
+            "notes": result.get("notes", []),
+            "log": log,
+        }
+    finally:
+        shutil.rmtree(scratch, ignore_errors=True)
+
+
+def run_voice_extract(
+    voices_dir: str,
+    voice_id: int,
+    source_name: str,
+    output_root: str,
+    stages: List[str],
+    speaker_threshold: float = shared.DEFAULT_SPEAKER_THRESHOLD,
+    sample_rate: int = media_fetch.DEFAULT_SAMPLE_RATE,
+    channel_mode: str = media_fetch.CHANNEL_MONO,
+    device: str = shared.DEFAULT_DEVICE,
+    progress_callback: Optional[ProgressCallback] = None,
+) -> Dict:
+    """Extract a selected voice from a processed clip.
+
+    Returns {"audio_path", "reference_path", "notes", "log"}.
+    Raises CleanupError if the processed cache is missing or extraction fails.
+    """
+    processed_path = os.path.join(voices_dir, shared.VOICES_PROCESSED_FILENAME)
+    if not os.path.isfile(processed_path):
+        raise CleanupError(
+            "Process a clip in manual mode first — the cached voices are gone."
+        )
+
+    ordered = shared.ordered_stages(stages)
+
+    python_path = sidecar_python()
+    if python_path is None:
+        raise CleanupError(SETUP_HINT)
+    if not media_fetch.ffmpeg_available():
+        raise CleanupError("ffmpeg is not on PATH, so the extracted file cannot be written.")
+
+    source_stem = os.path.splitext(source_name)[0]
+    directory = os.path.join(output_root, shared.CLEANUP_SUBDIR)
+    os.makedirs(directory, exist_ok=True)
+
+    output_stem = media_fetch.sanitize_filename(
+        f"{source_stem}_voice{voice_id}{shared.CLEANUP_SUFFIX}"
+    )
+    audio_path = media_fetch.unique_path(directory, output_stem, shared.CLEANUP_EXTENSION)
+
+    reference_stem = media_fetch.sanitize_filename(
+        f"{source_stem}_voice{voice_id}_reference{shared.CLEANUP_SUFFIX}"
+    )
+    reference_path = media_fetch.unique_path(directory, reference_stem, shared.CLEANUP_EXTENSION)
+
+    scratch = tempfile.mkdtemp(prefix="audio_extract_")
+    progress_path = os.path.join(scratch, "progress.jsonl")
+    stdout_path = os.path.join(scratch, "stdout.txt")
+    stderr_path = os.path.join(scratch, "stderr.txt")
+
+    command = build_extract_command(
+        python_path=python_path,
+        input_path=processed_path,
+        output_path=audio_path,
+        reference_output=reference_path,
+        voices_dir=voices_dir,
+        voice_id=voice_id,
+        stages=ordered,
+        progress_path=progress_path,
+        speaker_threshold=speaker_threshold,
+        sample_rate=sample_rate,
+        channel_mode=channel_mode,
+        device=device,
+    )
+
+    try:
+        result = _run_worker(
+            command=command,
+            progress_path=progress_path,
+            stdout_path=stdout_path,
+            stderr_path=stderr_path,
+            progress_callback=progress_callback,
+            finished_message="Extracting voice",
+        )
+        log = result.get("log", [])
+
+        if not os.path.isfile(result.get("reference", "")):
+            raise CleanupError(
+                "The extraction worker reported success but did not write "
+                f"the reference file to {result.get('reference')!r}."
+            )
+
+        return {
+            "audio_path": result.get("output", audio_path),
+            "reference_path": result.get("reference", reference_path),
+            "notes": result.get("notes", []),
+            "log": log,
+        }
+    finally:
+        shutil.rmtree(scratch, ignore_errors=True)

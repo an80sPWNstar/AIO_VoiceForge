@@ -293,19 +293,62 @@ def _embed_reference(path: str):
     return vector / norm if norm > 0 else vector
 
 
-def _dominant_centroid(vectors, spans):
-    """Return (target_vector, note) for the speaker who talks the most.
+def _analysis_units(spans):
+    """Merge nearby VAD spans into units long enough to embed stably.
 
-    Clustering runs on whole VAD spans because long spans give stable
-    embeddings, which is what choosing the right speaker needs. The result only
-    picks a target; what actually gets kept is decided per window by
-    _score_windows.
+    Sub-second spans produce embeddings so noisy that one speaker clusters as
+    several voices (see VOICE_UNIT_TARGET_SECONDS in the shared constants).
+    Only pauses up to VOICE_UNIT_MAX_GAP_SECONDS are bridged, and a unit stops
+    growing once it reaches the target, so turn-taking between two speakers is
+    unlikely to be fused into one unit.
+    """
+    units = []
+    for start, end in spans:
+        if units:
+            last_start, last_end = units[-1]
+            if (start - last_end <= shared.VOICE_UNIT_MAX_GAP_SECONDS
+                    and (last_end - last_start) < shared.VOICE_UNIT_TARGET_SECONDS):
+                units[-1] = (last_start, end)
+                continue
+        units.append((start, end))
+    return units
+
+
+def _merge_similar_clusters(vectors, labels, talk_time):
+    """Fold clusters whose centroids read as the same voice into one.
+
+    Returns (labels, talk_time) with the smaller cluster relabelled into the
+    larger at each merge, repeated until no pair scores at or above
+    VOICE_MERGE_SIMILARITY.
+    """
+    import numpy as np
+
+    labels = np.array(labels)
+    talk_time = dict(talk_time)
+    while len(talk_time) > 1:
+        ids = sorted(talk_time)
+        centroids = {i: _normalised_centroid(vectors, labels, i) for i in ids}
+        best_pair, best_similarity = None, shared.VOICE_MERGE_SIMILARITY
+        for index, a in enumerate(ids):
+            for b in ids[index + 1:]:
+                similarity = float(centroids[a] @ centroids[b])
+                if similarity >= best_similarity:
+                    best_pair, best_similarity = (a, b), similarity
+        if best_pair is None:
+            break
+        a, b = best_pair
+        keep, fold = (a, b) if talk_time[a] >= talk_time[b] else (b, a)
+        labels[labels == fold] = keep
+        talk_time[keep] += talk_time.pop(fold)
+    return labels, talk_time
+
+
+def _cluster_voices(vectors, spans):
+    """Group spans into voices. Returns (labels, talk_time) where talk_time
+    maps int label -> total seconds.
     """
     import numpy as np
     from sklearn.cluster import AgglomerativeClustering
-
-    if len(spans) == 1:
-        return vectors[0], "Only one usable speech segment; used it as the target voice."
 
     clustering = AgglomerativeClustering(
         n_clusters=None,
@@ -319,11 +362,34 @@ def _dominant_centroid(vectors, spans):
     for label, (start, end) in zip(labels, spans):
         talk_time[int(label)] = talk_time.get(int(label), 0.0) + (end - start)
 
-    dominant = max(talk_time, key=talk_time.get)
-    centroid = vectors[labels == dominant].mean(axis=0)
+    return _merge_similar_clusters(vectors, labels, talk_time)
+
+
+def _normalised_centroid(vectors, labels, label):
+    """Mean of the label's vectors, L2-normalised."""
+    import numpy as np
+
+    centroid = vectors[labels == label].mean(axis=0)
     norm = np.linalg.norm(centroid)
     if norm > 0:
         centroid = centroid / norm
+    return centroid
+
+
+def _dominant_centroid(vectors, spans):
+    """Return (target_vector, note) for the speaker who talks the most.
+
+    Clustering runs on whole VAD spans because long spans give stable
+    embeddings, which is what choosing the right speaker needs. The result only
+    picks a target; what actually gets kept is decided per window by
+    _score_windows.
+    """
+    if len(spans) == 1:
+        return vectors[0], "Only one usable speech segment; used it as the target voice."
+
+    labels, talk_time = _cluster_voices(vectors, spans)
+    dominant = max(talk_time, key=talk_time.get)
+    centroid = _normalised_centroid(vectors, labels, dominant)
 
     total = sum(talk_time.values())
     share = talk_time[dominant] / total if total else 1.0
@@ -491,42 +557,72 @@ def _concatenate(source_path: str, keep: Sequence[Tuple[float, float]],
     return float(len(joined)) / rate
 
 
-def keep_one_speaker(source_path: str, destination_path: str, mode: str,
-                     sample_path: Optional[str], threshold: float,
-                     reporter: ProgressReporter) -> str:
-    """Run the speaker isolation stage. Returns a human-readable note.
+def _best_reference_span(scored, threshold, duration):
+    """Pick the best <= REFERENCE_CLIP_SECONDS span of the target's speech.
 
-    Two passes. The first decides WHO to keep, from whole speech spans, because
-    long spans embed stably. The second decides WHAT to keep, scoring every
-    1.5s window against that target -- which is what catches a second speaker
-    buried inside one long unbroken span.
+    `scored` is _score_windows output: [(begin, end, similarity)].
+    Returns (start, end).
+    """
+    import numpy as np
+
+    if not scored:
+        raise CleanupError("No speech windows to select a reference from.")
+
+    kept = [w for w in scored if w[2] >= threshold]
+    if not kept:
+        kept = [max(scored, key=lambda w: w[2])]
+
+    runs = []
+    current_run = [kept[0]]
+    for window in kept[1:]:
+        if window[0] <= current_run[-1][1]:
+            current_run.append(window)
+        else:
+            runs.append(current_run)
+            current_run = [window]
+    if current_run:
+        runs.append(current_run)
+
+    candidates = []
+    for run in runs:
+        run_start = run[0][0]
+        run_end = run[-1][1]
+        run_interval = run_end - run_start
+        run_similarities = [w[2] for w in run]
+
+        if run_interval <= shared.REFERENCE_CLIP_SECONDS:
+            score = float(np.mean(run_similarities))
+            candidates.append(((run_start, run_end), score, run_interval))
+        else:
+            cursor = run_start
+            while cursor + shared.REFERENCE_CLIP_SECONDS <= run_end:
+                window_end = cursor + shared.REFERENCE_CLIP_SECONDS
+                window_sims = [w[2] for w in run
+                               if w[0] >= cursor and w[1] <= window_end]
+                if window_sims:
+                    score = float(np.mean(window_sims))
+                    candidates.append(((cursor, window_end), score, shared.REFERENCE_CLIP_SECONDS))
+                cursor += shared.SPEAKER_HOP_SECONDS
+
+    if not candidates:
+        raise CleanupError("Could not find a suitable reference span.")
+
+    # Longest first, similarity as the tie-break: every candidate already
+    # cleared the match threshold, and the engine gets more out of 10 good
+    # seconds than out of 1.2 slightly-better ones.
+    best = max(candidates, key=lambda c: (c[2], c[1]))
+    start, end = best[0]
+    end = min(end, duration)
+    return start, end
+
+
+def _isolate_target(source_path: str, destination_path: str, target, threshold: float,
+                    spans: Sequence[Tuple[float, float]], duration: float,
+                    reporter: ProgressReporter):
+    """Score, keep, pad, concatenate. Returns (kept_seconds, removed_seconds,
+    scored) where scored is the _score_windows output.
     """
     from silero_vad import read_audio
-
-    spans, duration = _detect_speech(source_path, reporter)
-    if not spans:
-        raise CleanupError(
-            "No speech was detected in this clip, so there is no speaker to "
-            "isolate. Turn that stage off, or check the earlier stages did not "
-            "remove the voice."
-        )
-
-    if mode == shared.SPEAKER_MODE_SAMPLE:
-        if not sample_path:
-            raise CleanupError(
-                "Speaker mode is 'match a sample' but no sample was supplied."
-            )
-        target = _embed_reference(sample_path)
-        note = "Matched against the supplied voice sample."
-    else:
-        usable = [s for s in spans
-                  if (s[1] - s[0]) >= shared.MIN_SPEECH_SEGMENT_SECONDS]
-        if not usable:
-            reporter.stage(shared.STAGE_SPEAKER, 1.0, "Only one voice present")
-            _copy_audio(source_path, destination_path)
-            return "Too little continuous speech to tell voices apart; kept everything."
-        vectors = _embed_segments(source_path, usable, reporter)
-        target, note = _dominant_centroid(vectors, usable)
 
     reporter.stage(shared.STAGE_SPEAKER, 0.70,
                    "Checking every second for other voices")
@@ -547,9 +643,50 @@ def keep_one_speaker(source_path: str, destination_path: str, mode: str,
     final = _pad_and_merge(kept, dropped, duration)
     reporter.stage(shared.STAGE_SPEAKER, 0.85, "Rebuilding the clip")
     kept_seconds = _concatenate(source_path, final, destination_path)
-
     removed = sum(end - start for start, end in dropped)
     reporter.stage(shared.STAGE_SPEAKER, 1.0, "Speaker isolated")
+
+    return kept_seconds, removed, scored
+
+
+def keep_one_speaker(source_path: str, destination_path: str, mode: str,
+                     sample_path: Optional[str], threshold: float,
+                     reporter: ProgressReporter) -> str:
+    """Run the speaker isolation stage. Returns a human-readable note.
+
+    Two passes. The first decides WHO to keep, from whole speech spans, because
+    long spans embed stably. The second decides WHAT to keep, scoring every
+    1.5s window against that target -- which is what catches a second speaker
+    buried inside one long unbroken span.
+    """
+    spans, duration = _detect_speech(source_path, reporter)
+    if not spans:
+        raise CleanupError(
+            "No speech was detected in this clip, so there is no speaker to "
+            "isolate. Turn that stage off, or check the earlier stages did not "
+            "remove the voice."
+        )
+
+    if mode == shared.SPEAKER_MODE_SAMPLE:
+        if not sample_path:
+            raise CleanupError(
+                "Speaker mode is 'match a sample' but no sample was supplied."
+            )
+        target = _embed_reference(sample_path)
+        note = "Matched against the supplied voice sample."
+    else:
+        usable = [u for u in _analysis_units(spans)
+                  if (u[1] - u[0]) >= shared.MIN_SPEECH_SEGMENT_SECONDS]
+        if not usable:
+            reporter.stage(shared.STAGE_SPEAKER, 1.0, "Only one voice present")
+            _copy_audio(source_path, destination_path)
+            return "Too little continuous speech to tell voices apart; kept everything."
+        vectors = _embed_segments(source_path, usable, reporter)
+        target, note = _dominant_centroid(vectors, usable)
+
+    kept_seconds, removed, scored = _isolate_target(
+        source_path, destination_path, target, threshold, spans, duration, reporter
+    )
     return (
         f"{note} Removed {removed:.0f}s of other voices; "
         f"result is {kept_seconds:.0f}s long."
@@ -561,6 +698,162 @@ def _copy_audio(source_path: str, destination_path: str) -> None:
     import soundfile as sf
     data, rate = sf.read(source_path, dtype="float32", always_2d=True)
     sf.write(destination_path, data, rate, subtype="FLOAT")
+
+
+def _found_voices(vectors, units):
+    """Group units into listable voices, gated by embedding stability.
+
+    Only units of at least VOICE_FOUNDER_MIN_SECONDS may found a voice:
+    shorter ones embed too noisily and, clustered directly, split one speaker
+    into many "voices" (the failure this replaces). Short units join the
+    founded voice they best match, or stay unattributed (label -1) and off the
+    list. Returns (labels, talk_time, notes); talk_time never has a -1 entry.
+    """
+    import numpy as np
+
+    lengths = [unit[1] - unit[0] for unit in units]
+    founder_indices = [i for i, length in enumerate(lengths)
+                       if length >= shared.VOICE_FOUNDER_MIN_SECONDS]
+    notes = []
+
+    if not founder_indices:
+        # Nothing stable to anchor on: cluster everything, but say the split
+        # is unreliable rather than presenting it as confident.
+        if len(units) == 1:
+            labels = np.zeros(1, dtype=int)
+            talk_time = {0: lengths[0]}
+        else:
+            labels, talk_time = _cluster_voices(vectors, units)
+        notes.append(
+            f"No speech ran longer than {shared.VOICE_FOUNDER_MIN_SECONDS:.0f}s "
+            "unbroken, so the voice split is a rough guess — the same person "
+            "may appear more than once."
+        )
+        return labels, talk_time, notes
+
+    founder_vectors = vectors[founder_indices]
+    founder_units = [units[i] for i in founder_indices]
+    if len(founder_indices) == 1:
+        founder_labels = np.zeros(1, dtype=int)
+        talk_time = {0: lengths[founder_indices[0]]}
+    else:
+        founder_labels, talk_time = _cluster_voices(founder_vectors, founder_units)
+    founder_labels = np.asarray(founder_labels)
+
+    labels = np.full(len(units), -1, dtype=int)
+    for position, index in enumerate(founder_indices):
+        labels[index] = founder_labels[position]
+
+    centroids = {
+        label: _normalised_centroid(founder_vectors, founder_labels, label)
+        for label in talk_time
+    }
+    unattributed = 0.0
+    for i in range(len(units)):
+        if labels[i] != -1:
+            continue
+        best_label, best_similarity = None, shared.VOICE_ATTACH_SIMILARITY
+        for label, centroid in centroids.items():
+            similarity = float(vectors[i] @ centroid)
+            if similarity >= best_similarity:
+                best_label, best_similarity = label, similarity
+        if best_label is None:
+            unattributed += lengths[i]
+        else:
+            labels[i] = best_label
+            talk_time[best_label] += lengths[i]
+
+    if unattributed > 0:
+        notes.append(
+            f"{unattributed:.0f}s of short speech snippets could not be "
+            "matched to a listed voice and were left off the list."
+        )
+    return labels, talk_time, notes
+
+
+def analyze_voices(source_path: str, voices_dir: str, reporter: ProgressReporter) -> Dict:
+    """Analyze a clip into distinct voices. Returns metadata dict."""
+    import json
+    import numpy as np
+    import soundfile as sf
+
+    spans, duration = _detect_speech(source_path, reporter)
+    if not spans:
+        raise CleanupError("No speech was detected in this clip.")
+
+    units = _analysis_units(spans)
+    usable = [u for u in units
+              if (u[1] - u[0]) >= shared.MIN_SPEECH_SEGMENT_SECONDS]
+    if not usable:
+        raise CleanupError("Too little continuous speech to tell voices apart.")
+
+    vectors = _embed_segments(source_path, usable, reporter)
+
+    labels, talk_time, notes = _found_voices(vectors, usable)
+
+    ordered_labels = sorted(talk_time.keys(),
+                           key=lambda l: talk_time[l], reverse=True)
+    kept_labels = ordered_labels[:shared.MAX_VOICES_LISTED]
+    dropped_count = len(ordered_labels) - len(kept_labels)
+
+    if dropped_count > 0:
+        notes.append(f"Found {len(ordered_labels)} voices; listed the top {len(kept_labels)}.")
+
+    os.makedirs(voices_dir, exist_ok=True)
+
+    data, rate = sf.read(source_path, dtype="float32", always_2d=True)
+
+    voices_list = []
+    for rank, label in enumerate(kept_labels, 1):
+        centroid = _normalised_centroid(vectors, labels, label)
+        label_spans = [usable[i] for i, l in enumerate(labels) if l == label]
+        longest_span = max(label_spans, key=lambda s: s[1] - s[0])
+
+        preview_duration = min(shared.VOICE_PREVIEW_SECONDS, longest_span[1] - longest_span[0])
+        span_midpoint = (longest_span[0] + longest_span[1]) / 2
+        preview_start = max(longest_span[0], span_midpoint - preview_duration / 2)
+        preview_end = min(preview_start + preview_duration, longest_span[1])
+        if preview_end - preview_start < preview_duration:
+            preview_start = max(longest_span[0], preview_end - preview_duration)
+
+        preview_path = os.path.join(voices_dir, f"preview_{rank}.wav")
+        preview_chunk = data[int(preview_start * rate):int(preview_end * rate)]
+        sf.write(preview_path, preview_chunk, rate, subtype="FLOAT")
+
+        total_talk_time = sum(s[1] - s[0] for s in label_spans)
+        # Share of the SPEECH, not of the clip: the UI says "% of the speech"
+        # and silence should not dilute it.
+        all_speech = sum(talk_time.values())
+        share = total_talk_time / all_speech if all_speech > 0 else 0.0
+
+        voices_list.append({
+            "id": rank,
+            "talk_seconds": float(total_talk_time),
+            "share": float(share),
+            "preview": os.path.abspath(preview_path),
+            "centroid": centroid.tolist(),
+        })
+
+    processed_path = os.path.join(voices_dir, shared.VOICES_PROCESSED_FILENAME)
+    _copy_audio(source_path, processed_path)
+
+    metadata_path = os.path.join(voices_dir, shared.VOICES_METADATA_FILENAME)
+    metadata = {
+        "duration": float(duration),
+        "processed": os.path.abspath(processed_path),
+        "voices": voices_list,
+    }
+    with open(metadata_path, "w", encoding="utf-8") as f:
+        json.dump(metadata, f, indent=2)
+
+    return {
+        "ok": True,
+        "output": os.path.abspath(processed_path),
+        "voices_dir": os.path.abspath(voices_dir),
+        "duration": float(duration),
+        "notes": notes,
+        "voices": voices_list,
+    }
 
 
 # --------------------------------------------------------------------------
@@ -688,8 +981,109 @@ def _clear_work_dir(work_dir: str, keep: str) -> None:
         pass  # still holds files the user asked to keep, or a locked handle
 
 
+def run_analyze(args, reporter: ProgressReporter) -> Dict:
+    """Analyze clip into distinct voices; run only separation stages."""
+    stages = shared.ordered_stages(args.stages.split(","))
+    separation_stages = [s for s in stages if s in (shared.STAGE_ISOLATE, shared.STAGE_DEREVERB, shared.STAGE_DENOISE)]
+
+    work_dir = os.path.join(args.voices_dir, shared.STAGES_SUBDIR)
+    os.makedirs(work_dir, exist_ok=True)
+
+    current = os.path.abspath(args.input)
+    separation = SeparationRunner(args.model_dir, work_dir)
+
+    separation_models = {
+        shared.STAGE_ISOLATE: args.vocal_model,
+        shared.STAGE_DEREVERB: args.dereverb_model,
+        shared.STAGE_DENOISE: args.denoise_model,
+    }
+
+    for stage in separation_stages:
+        current = separation.run(stage, separation_models[stage], current, reporter)
+
+    # analyze_voices writes processed.wav into voices_dir itself; the work dir
+    # (where `current` may live) is only cleared after that copy exists.
+    result = analyze_voices(current, args.voices_dir, reporter)
+    _clear_work_dir(work_dir, keep=result["output"])
+    return result
+
+
+def run_extract(args, reporter: ProgressReporter) -> Dict:
+    """Extract one voice from analyzed clip."""
+    import json
+    import numpy as np
+
+    voices_json_path = os.path.join(args.voices_dir, shared.VOICES_METADATA_FILENAME)
+    try:
+        with open(voices_json_path, "r", encoding="utf-8") as f:
+            metadata = json.load(f)
+    except FileNotFoundError as exc:
+        raise CleanupError(f"Voices metadata not found: {voices_json_path}") from exc
+
+    voices = metadata.get("voices", [])
+    voice_ids = [v["id"] for v in voices]
+    if args.voice_id not in voice_ids:
+        raise CleanupError(
+            f"Voice ID {args.voice_id} not found. Available: {voice_ids}"
+        )
+
+    voice = next(v for v in voices if v["id"] == args.voice_id)
+    target = np.asarray(voice["centroid"])
+
+    source = os.path.join(args.voices_dir, shared.VOICES_PROCESSED_FILENAME)
+    if not os.path.exists(source):
+        raise CleanupError("Process a clip in manual mode first.")
+
+    spans, duration = _detect_speech(source, reporter)
+
+    work_dir = os.path.join(args.voices_dir, shared.STAGES_SUBDIR)
+    os.makedirs(work_dir, exist_ok=True)
+
+    isolated_path = os.path.join(work_dir, "isolated.wav")
+    kept_seconds, removed, scored = _isolate_target(
+        source, isolated_path, target, args.speaker_threshold, spans, duration, reporter
+    )
+
+    ref_start, ref_end = _best_reference_span(scored, args.speaker_threshold, duration)
+    reference_path = os.path.join(work_dir, "reference.wav")
+    _concatenate(source, [(ref_start, ref_end)], reference_path)
+
+    finalise(
+        isolated_path, args.output,
+        trim=shared.STAGE_TRIM in shared.ordered_stages(args.stages.split(",")),
+        normalize=shared.STAGE_NORMALIZE in shared.ordered_stages(args.stages.split(",")),
+        sample_rate=args.sample_rate,
+        channel_mode=args.channel_mode,
+        reporter=reporter,
+    )
+
+    finalise(
+        reference_path, args.reference_output,
+        trim=False,
+        normalize=shared.STAGE_NORMALIZE in shared.ordered_stages(args.stages.split(",")),
+        sample_rate=args.sample_rate,
+        channel_mode=args.channel_mode,
+        reporter=reporter,
+    )
+
+    _clear_work_dir(work_dir, keep="")
+
+    return {
+        "ok": True,
+        "output": os.path.abspath(args.output),
+        "reference": os.path.abspath(args.reference_output),
+        "notes": [
+            f"Kept {kept_seconds:.0f}s of voice {voice['id']}; "
+            f"removed {removed:.0f}s of other voices.",
+            f"Reference clip: {ref_end - ref_start:.1f}s starting at {ref_start:.1f}s.",
+        ],
+    }
+
+
 def parse_args(argv: Optional[Sequence[str]] = None):
     parser = argparse.ArgumentParser(description="Clean up an audio clip.")
+    parser.add_argument("--mode", choices=("clean", "analyze", "extract"),
+                        default="clean")
     parser.add_argument("--input", required=True)
     parser.add_argument("--output", required=True)
     parser.add_argument("--stages", required=True,
@@ -709,6 +1103,9 @@ def parse_args(argv: Optional[Sequence[str]] = None):
                         default=media_fetch.DEFAULT_SAMPLE_RATE)
     parser.add_argument("--channel-mode", default=media_fetch.DEFAULT_CHANNEL_MODE)
     parser.add_argument("--keep-intermediates", action="store_true")
+    parser.add_argument("--voices-dir", default=None)
+    parser.add_argument("--voice-id", type=int, default=None)
+    parser.add_argument("--reference-output", default=None)
     return parser.parse_args(argv)
 
 
@@ -719,11 +1116,25 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     # import in this file is inside a function.
     if args.device == shared.DEVICE_CPU:
         os.environ["CUDA_VISIBLE_DEVICES"] = ""
+    else:
+        # A "cuda:N" pick narrows the visible set to that one card, so the
+        # hardcoded cuda:0 further down means "the chosen card". The indices
+        # follow the same default CUDA ordering the app's picker enumerates.
+        index = shared.cuda_index(args.device)
+        if index is not None:
+            os.environ["CUDA_VISIBLE_DEVICES"] = str(index)
     os.environ["AUDIO_CLEANUP_MODEL_DIR"] = args.model_dir
 
     reporter = ProgressReporter(args.progress_file, args.stages.split(","))
     try:
-        result = run_pipeline(args, reporter)
+        if args.mode == "clean":
+            result = run_pipeline(args, reporter)
+        elif args.mode == "analyze":
+            result = run_analyze(args, reporter)
+        elif args.mode == "extract":
+            result = run_extract(args, reporter)
+        else:
+            raise CleanupError(f"Unknown mode: {args.mode}")
     except CleanupError as exc:
         reporter.note(str(exc))
         print(json.dumps({"ok": False, "error": str(exc)}))

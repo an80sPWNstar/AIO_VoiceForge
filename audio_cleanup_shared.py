@@ -147,6 +147,38 @@ SPEAKER_THRESHOLD_STEP = 0.05
 # decide how many distinct voices are present.
 SPEAKER_CLUSTER_DISTANCE = 0.55
 
+# Manual voice selection: preview clips and reference extraction.
+VOICE_PREVIEW_SECONDS = 5.0      # long enough to recognise a speaker
+REFERENCE_CLIP_SECONDS = 15.0    # the engine's reference cap
+
+# Voice-clustering inputs. A 1-2s span embeds so noisily that one speaker's
+# snippets cluster apart (measured 2026-09-05: same-voice pairs at 0.05-0.40
+# centroid similarity on 0.7-2.3s spans — one person listed as 6+ "voices").
+# Nearby VAD spans are therefore merged into units near the target length
+# before embedding. The gap cap stays small so a fast two-speaker exchange is
+# not fused into one unit.
+VOICE_UNIT_TARGET_SECONDS = 4.0
+VOICE_UNIT_MAX_GAP_SECONDS = 0.6
+# Only a unit at least this long may FOUND a voice in the manual list.
+# Shorter units still embed too noisily even after merging (measured: 0.7-1.6s
+# units of one speaker at 0.05-0.40 mutual similarity), so they only join a
+# founded voice, never create one. Extraction re-scores every window against
+# the chosen voice, so speech left off the list is never lost from the output.
+VOICE_FOUNDER_MIN_SECONDS = 2.5
+# A short unit joins the founded voice it best matches when it clears this;
+# below it, the unit is left unattributed. Only talk-time attribution rides on
+# this, not extraction.
+VOICE_ATTACH_SIMILARITY = 0.25
+# Clusters whose centroids score at least this are the same voice split in
+# two, and get folded together. Same boundary evidence as
+# DEFAULT_SPEAKER_THRESHOLD: cross-speaker scored <= 0.29 in the tuning data,
+# same-speaker >= 0.41.
+VOICE_MERGE_SIMILARITY = 0.35
+MAX_VOICES_LISTED = 8
+VOICES_SUBDIR = "voices"
+VOICES_METADATA_FILENAME = "voices.json"
+VOICES_PROCESSED_FILENAME = "processed.wav"
+
 # Speech shorter than this is too little signal for a stable embedding, so it
 # is not used when working out WHO the target speaker is. It is still scored
 # and kept or dropped like any other speech.
@@ -210,6 +242,20 @@ INTERMEDIATE_SAMPLE_RATE = 44100
 
 DEFAULT_DEVICE = "cuda"
 DEVICE_CPU = "cpu"
+
+
+def cuda_index(device):
+    """Return N for a "cuda:N" device string, None for anything else.
+
+    None means "no specific card": bare "cuda" keeps whatever CUDA device 0
+    resolves to, and "cpu" is handled by the caller before the index matters.
+    """
+    if isinstance(device, str) and device.startswith("cuda:"):
+        try:
+            return int(device.split(":", 1)[1])
+        except ValueError:
+            return None
+    return None
 
 # Model cache lives beside the venv rather than in the repo, since it is
 # several GB of downloads and must survive a git clean.

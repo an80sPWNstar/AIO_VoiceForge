@@ -47,6 +47,7 @@ from webui_progress import (
     render_progress_bar,
 )
 from webui_runtime import (
+    selected_lora,
     DEFAULT_ENGINE_LANGUAGE,
     EMO_CHOICES_ALL,
     _build_tts_runtime_options,
@@ -460,8 +461,15 @@ def _prepare_generation_request(
 
     write_metadata_file(metadata_path, metadata)
 
+    lora_path, lora_strength = selected_lora.get()
     return {
         "runtime": _build_tts_runtime_options(),
+        # Top-level rather than inside runtime: the runner applies an adapter
+        # with set_lora on the already-loaded engine, and keeping it out of
+        # the runtime dict stops ModelHolder from reloading the whole model
+        # on every adapter switch.
+        "lora_path": lora_path,
+        "lora_strength": lora_strength,
         "task_layout": task_layout,
         "metadata_path": metadata_path,
         "task_id": task_layout["task_id"],

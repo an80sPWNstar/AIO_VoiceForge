@@ -120,6 +120,11 @@ class EngineWorker:
             "PYTHONIOENCODING": "utf-8",
             engine_paths.ENGINE_ROOT_ENV: engine_paths.ENGINE_ROOT,
         }
+        # The launcher .bat exports an HF_HOME for whichever engine it was
+        # written against; the worker must use THIS engine's cache or the aux
+        # models (w2v-bert, CAMPPlus, BigVGAN) are re-downloaded on first use.
+        if os.path.isdir(engine_paths.ENGINE_HF_CACHE):
+            env["HF_HOME"] = engine_paths.ENGINE_HF_CACHE
         popen_kwargs = {
             "cwd": os.path.dirname(os.path.abspath(__file__)),
             "env": env,
