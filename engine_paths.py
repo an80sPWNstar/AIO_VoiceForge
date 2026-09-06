@@ -9,11 +9,11 @@ Both sides of that boundary need the same four paths, so they are defined once
 here rather than spelled out in webui.py and in the worker.
 
 The default is the SECourses V5 install (swapped 2026-09-05); set
-INDEXTTS25_ROOT to point at a different checkout — the V4-era engine at
-D:\\Index_TTS_v4\\index-tts-2.5 still works as a rollback target. Layout
-differences between the two are detected rather than configured: V5 keeps its
-venv in `venv/` and models in `models/`, the older checkout uses `.venv/` and
-`checkpoints/`.
+INDEXTTS25_ROOT to point at a different checkout. (The V4-era rollback engine
+was deleted with the old D:\\Index_TTS_v4 install on 2026-09-05.) Layout
+differences between checkouts are detected rather than configured: V5 keeps
+its venv in `venv/` and models in `models/`, older checkouts used `.venv/`
+and `checkpoints/`.
 """
 from __future__ import annotations
 

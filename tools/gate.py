@@ -17,7 +17,7 @@ a hand-maintained list cannot notice a file nobody wrote.
 Run it with the install's interpreter. The checkout has no venv of its own
 and gradio, librosa and torch live in the install:
 
-  D:\\Index_TTS_v4\\Premium_IndexTTS2_SECourses\\venv\\Scripts\\python.exe tools\\gate.py
+  E:\\vs_code_projects\\venv_voiceforge_host\\Scripts\\python.exe tools\\gate.py
 
 Exit status is 0 only when nothing failed, nothing errored, no module failed
 to import, and the test count has not dropped below TEST_COUNT_FLOOR.

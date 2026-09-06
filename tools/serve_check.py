@@ -11,7 +11,7 @@ least proves every control is present and reachable.
 So: launch headlessly on a spare port, fetch the config gradio hands the
 browser, and look for each control by its label.
 
-  D:\\Index_TTS_v4\\Premium_IndexTTS2_SECourses\\venv\\Scripts\\python.exe tools\\serve_check.py
+  E:\\vs_code_projects\\venv_voiceforge_host\\Scripts\\python.exe tools\\serve_check.py
 
 inbrowser=False deliberately -- this runs unattended and must not open a tab.
 Run it from a directory whose layout the app expects (see the note about the

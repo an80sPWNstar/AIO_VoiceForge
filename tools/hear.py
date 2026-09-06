@@ -21,7 +21,7 @@ the speech-service checkout's venv, librosa in the TTS install's. This module
 must run under the TTS install's interpreter (same as tools/gate.py) and
 shells out to ASR_PYTHON for the transcription half.
 
-  D:\\Index_TTS_v4\\Premium_IndexTTS2_SECourses\\venv\\Scripts\\python.exe \\
+  E:\\vs_code_projects\\venv_voiceforge_host\\Scripts\\python.exe \\
       tools\\hear.py path\\to\\out.wav --expect "the text it was asked to say"
 
 Exits 0 and prints one JSON object either way; judgment belongs to the caller.
