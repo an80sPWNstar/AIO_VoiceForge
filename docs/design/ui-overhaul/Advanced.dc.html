@@ -1,0 +1,174 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,700;12..96,800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <style>
+    body { margin: 0; font-family: ui-sans-serif, system-ui, "Segoe UI", sans-serif; color: #eef0f3; background: #131519; }
+    a { color: #ff7a3d; } a:hover { color: #e6470f; }
+    .mono { font-family: "JetBrains Mono", ui-monospace, monospace; font-variant-numeric: tabular-nums; }
+    .brico { font-family: "Bricolage Grotesque", ui-sans-serif, sans-serif; letter-spacing: -0.02em; }
+    .panel { background: #1b1e24; border: 1px solid rgba(255,255,255,.08); border-radius: 18px; padding: 16px; }
+    .sub { background: #22262d; border: 1px solid rgba(255,255,255,.08); border-radius: 14px; padding: 13px; }
+    .h { font-family: "Bricolage Grotesque", sans-serif; font-weight: 700; font-size: 15px; letter-spacing: -0.02em; margin: 0 0 12px; padding-bottom: 9px; border-bottom: 1px solid rgba(255,255,255,.08); }
+    .hint { font-size: 12px; color: #8a8f98; line-height: 1.45; }
+    .dev { display: flex; align-items: center; gap: 7px; font-family: "JetBrains Mono", monospace; font-size: 10.5px; color: #c7ccd4; background: #1b1e24; border: 1px solid rgba(255,255,255,.1); border-radius: 8px; padding: 6px 10px; }
+    .dot { width: 7px; height: 7px; border-radius: 50%; flex: none; }
+    .grid-row { display: grid; grid-template-columns: 140px repeat(5, minmax(0, 1fr)); gap: 6px; align-items: center; padding: 8px 0; border-bottom: 1px solid rgba(255,255,255,.06); }
+    .radio { width: 14px; height: 14px; border-radius: 50%; border: 1.5px solid rgba(255,255,255,.25); justify-self: center; position: relative; }
+    .radio.on { border-color: #e6470f; }
+    .radio.on::after { content: ""; position: absolute; inset: 3px; border-radius: 50%; background: #e6470f; }
+    .radio.na { border-style: dashed; opacity: .35; }
+    .vbar { height: 5px; border-radius: 3px; background: #2c333d; position: relative; overflow: hidden; }
+    .vfill { position: absolute; left: 0; top: 0; bottom: 0; background: #0f9f7f; }
+    .pathrow { display: flex; align-items: center; gap: 10px; padding: 9px 13px; }
+    .track { height: 6px; border-radius: 3px; background: #2c333d; position: relative; }
+    .fill { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 3px; background: #e6470f; }
+    .thumb { position: absolute; top: 50%; width: 16px; height: 16px; border-radius: 50%; background: #fdfcfa; border: 1px solid rgba(60,56,50,.4); transform: translate(-50%,-50%); box-shadow: 0 1px 3px rgba(0,0,0,.4); }
+  </style>
+</helmet>
+<div style="width: 1280px; height: 920px; display: flex; flex-direction: column; background: #131519; box-sizing: border-box;">
+
+  <div style="display: flex; align-items: center; gap: 14px; padding: 18px 28px 12px;">
+    <div class="brico" style="font-weight: 800; font-size: 26px; letter-spacing: -0.03em;">AIO <em style="font-style: normal; color: #e6470f;">Voice</em>Forge</div>
+    <div class="mono" style="font-size: 10.5px; letter-spacing: .14em; text-transform: uppercase; color: #8a8f98;">local voice studio</div>
+    <div style="margin-left: auto; display: flex; gap: 8px;">
+      <div class="dev"><span class="dot" style="background: #8a8f98;"></span>SPEECH&nbsp;·&nbsp;GPU 0&nbsp;·&nbsp;idle<svg width="9" height="9" viewBox="0 0 10 10" fill="none" stroke="#8a8f98" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 4 5 6.5 7.5 4"></path></svg></div>
+      <div class="dev"><span class="dot" style="background: #8a8f98;"></span>TOOLS&nbsp;·&nbsp;GPU 1&nbsp;·&nbsp;idle<svg width="9" height="9" viewBox="0 0 10 10" fill="none" stroke="#8a8f98" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 4 5 6.5 7.5 4"></path></svg></div>
+      <div class="dev"><span class="dot" style="background: #8a8f98;"></span>TRAIN&nbsp;·&nbsp;GPU 2&nbsp;·&nbsp;idle<svg width="9" height="9" viewBox="0 0 10 10" fill="none" stroke="#8a8f98" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 4 5 6.5 7.5 4"></path></svg></div>
+    </div>
+  </div>
+
+  <div style="display: flex; gap: 4px; padding: 0 28px; border-bottom: 1px solid rgba(255,255,255,.08);">
+    <div class="brico" style="padding: 10px 18px; font-weight: 650; font-size: 14px; color: #8a8f98;">Speak</div>
+    <div class="brico" style="padding: 10px 18px; font-weight: 650; font-size: 14px; color: #8a8f98;">Capture Voices</div>
+    <div class="brico" style="padding: 10px 18px; font-weight: 650; font-size: 14px; color: #8a8f98;">Train</div>
+    <div class="brico" style="padding: 10px 18px; font-weight: 700; font-size: 14px; color: #eef0f3; background: #1b1e24; border: 1px solid rgba(255,255,255,.1); border-bottom: none; border-radius: 10px 10px 0 0; box-shadow: inset 0 3px 0 #e6470f;">Advanced</div>
+  </div>
+
+  <div style="display: grid; grid-template-columns: repeat(12, minmax(0, 1fr)); gap: 16px; padding: 18px 28px 24px; flex-grow: 1; box-sizing: border-box;">
+
+    <!-- Generation, in depth: the main event -->
+    <div class="panel" style="grid-column: span 7; display: flex; flex-direction: column;">
+      <div class="h">Generation, in depth</div>
+      <div class="hint" style="margin-bottom: 12px;">Everything the Speak tab simplified, grouped. Closed groups still show their current values, so nothing is ever hidden.</div>
+
+      <!-- Sampling: expanded, with the hover-card pattern shown once -->
+      <div class="sub" style="margin-bottom: 8px; position: relative;">
+        <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 12px;">
+          <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="#8a8f98" stroke-width="1.5" stroke-linecap="round"><path d="M2.5 4 6 8l3.5-4"></path></svg>
+          <span style="font-size: 13px; font-weight: 650;">Sampling <span class="hint" style="font-weight: 400;">(creativity)</span></span>
+          <span class="mono hint" style="margin-left: auto;">changes how adventurous each take is</span>
+        </div>
+        <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 12px;">
+          <span class="hint" style="width: 150px; border-bottom: 1px dotted #8a8f98; align-self: center;">Temperature <span style="opacity: .75;">(variety)</span></span>
+          <div class="track" style="flex-grow: 1;"><div class="fill" style="width: 40%;"></div><div class="thumb" style="left: 40%;"></div></div>
+          <span class="mono hint" style="width: 38px; text-align: right;">0.80</span>
+        </div>
+        <!-- The hover card, shown once as the pattern for every control -->
+        <div style="position: absolute; top: 62px; left: 26px; width: 300px; background: #262a31; border: 1px solid rgba(255,255,255,.18); border-radius: 10px; padding: 11px 13px; box-shadow: 0 10px 28px rgba(0,0,0,.5); z-index: 2;">
+          <div style="font-size: 12px; font-weight: 650; margin-bottom: 4px;">Temperature</div>
+          <div class="hint" style="font-size: 11.5px;">How adventurous each take is. Lower = flatter and safer, higher = livelier but riskier. Narration sits well at 0.8.</div>
+        </div>
+        <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 12px;">
+          <span class="hint" style="width: 150px;">Top-p <span style="opacity: .75;">(word pool)</span></span>
+          <div class="track" style="flex-grow: 1;"><div class="fill" style="width: 95%;"></div><div class="thumb" style="left: 95%;"></div></div>
+          <span class="mono hint" style="width: 38px; text-align: right;">0.95</span>
+        </div>
+        <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 12px;">
+          <span class="hint" style="width: 150px;">Top-k <span style="opacity: .75;">(pool cap)</span></span>
+          <div class="track" style="flex-grow: 1;"><div class="fill" style="width: 27%;"></div><div class="thumb" style="left: 27%;"></div></div>
+          <span class="mono hint" style="width: 38px; text-align: right;">40</span>
+        </div>
+        <div style="display: flex; align-items: center; gap: 12px;">
+          <span class="hint" style="width: 150px;">Seed <span style="opacity: .75;">(repeatability)</span></span>
+          <span class="mono" style="font-size: 12px; color: #c7ccd4;">auto — new take every run</span>
+          <span class="hint" style="margin-left: auto;">pin a number to make a take repeatable</span>
+        </div>
+      </div>
+      <div class="hint" style="margin: 0 0 10px 2px;">Every control here has a dotted underline and a hover card like the one shown — plain words first, the practical setting last.</div>
+
+      <!-- Collapsed groups -->
+      <div class="sub" style="display: flex; align-items: center; gap: 10px; margin-bottom: 8px;">
+        <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="#8a8f98" stroke-width="1.5" stroke-linecap="round"><path d="M4 2.5 8 6l-4 3.5"></path></svg>
+        <span style="font-size: 13px; font-weight: 650;">Segmentation &amp; captions <span class="hint" style="font-weight: 400;">(text splitting)</span></span>
+        <span class="mono hint" style="margin-left: auto;">max 220 tokens · cue timing off</span>
+      </div>
+      <div class="sub" style="display: flex; align-items: center; gap: 10px; margin-bottom: 8px;">
+        <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="#8a8f98" stroke-width="1.5" stroke-linecap="round"><path d="M4 2.5 8 6l-4 3.5"></path></svg>
+        <span style="font-size: 13px; font-weight: 650;">Emotion vectors, raw <span class="hint" style="font-weight: 400;">(fine emotion mix)</span></span>
+        <span class="mono hint" style="margin-left: auto;">8 sliders · currently from Speak tab</span>
+      </div>
+      <div class="sub" style="display: flex; align-items: center; gap: 10px; margin-bottom: 8px;">
+        <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="#8a8f98" stroke-width="1.5" stroke-linecap="round"><path d="M4 2.5 8 6l-4 3.5"></path></svg>
+        <span style="font-size: 13px; font-weight: 650;">Voice shaping, raw <span class="hint" style="font-weight: 400;">(delivery)</span></span>
+        <span class="mono hint" style="margin-left: auto;">speed 1.0× · pitch +0 st · tone natural</span>
+      </div>
+      <div class="sub" style="display: flex; align-items: center; gap: 10px;">
+        <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="#8a8f98" stroke-width="1.5" stroke-linecap="round"><path d="M4 2.5 8 6l-4 3.5"></path></svg>
+        <span style="font-size: 13px; font-weight: 650;">Presets <span class="hint" style="font-weight: 400;">(saved setups)</span></span>
+        <span class="mono hint" style="margin-left: auto;">save · load · reset · delete</span>
+      </div>
+    </div>
+
+    <!-- Right rail: devices + paths -->
+    <div style="grid-column: span 5; display: flex; flex-direction: column; gap: 16px;">
+      <div class="panel">
+        <div class="h">Where each tool runs</div>
+        <div class="hint" style="margin-bottom: 10px;">Auto picks the least busy card that fits. A CPU cell means it can run without a GPU. Dashed cells don't fit that tool. GPU 0 = 5070 Ti · 1 = 5060 Ti · 2 = 3090.</div>
+
+        <div class="grid-row mono" style="font-size: 9.5px; color: #8a8f98; text-transform: uppercase; letter-spacing: .08em; border-bottom-color: rgba(255,255,255,.12);">
+          <span>tool</span><span style="justify-self: center;">auto</span><span style="justify-self: center;">gpu 0</span><span style="justify-self: center;">gpu 1</span><span style="justify-self: center;">gpu 2</span><span style="justify-self: center;">cpu</span>
+        </div>
+        <div class="grid-row">
+          <span style="font-size: 12.5px; font-weight: 650;">Speech engine</span>
+          <span class="radio"></span><span class="radio on"></span><span class="radio"></span><span class="radio"></span><span class="radio"></span>
+        </div>
+        <div class="grid-row">
+          <span style="font-size: 12.5px; font-weight: 650;">Voice finding</span>
+          <span class="radio on"></span><span class="radio"></span><span class="radio"></span><span class="radio"></span><span class="radio"></span>
+        </div>
+        <div class="grid-row">
+          <span style="font-size: 12.5px; font-weight: 650;">Transcription</span>
+          <span class="radio on"></span><span class="radio"></span><span class="radio"></span><span class="radio"></span><span class="radio"></span>
+        </div>
+        <div class="grid-row">
+          <span style="font-size: 12.5px; font-weight: 650;">RVC conversion</span>
+          <span class="radio on"></span><span class="radio"></span><span class="radio"></span><span class="radio"></span><span class="radio"></span>
+        </div>
+        <div class="grid-row" style="border-bottom: none;">
+          <span style="font-size: 12.5px; font-weight: 650;">Model training</span>
+          <span class="radio"></span><span class="radio na"></span><span class="radio na"></span><span class="radio on"></span><span class="radio na"></span>
+        </div>
+
+        <div style="height: 1px; background: rgba(255,255,255,.08); margin: 12px 0 12px;"></div>
+        <div style="display: flex; flex-direction: column; gap: 8px;">
+          <div style="display: flex; align-items: center; gap: 10px;"><span class="mono" style="font-size: 11px; width: 110px; color: #c7ccd4;">GPU 0 · 5070 Ti</span><div class="vbar" style="flex-grow: 1;"><div class="vfill" style="width: 39%;"></div></div><span class="mono hint" style="width: 66px; text-align: right;">6.2 / 16G</span></div>
+          <div style="display: flex; align-items: center; gap: 10px;"><span class="mono" style="font-size: 11px; width: 110px; color: #c7ccd4;">GPU 1 · 5060 Ti</span><div class="vbar" style="flex-grow: 1;"><div class="vfill" style="width: 4%;"></div></div><span class="mono hint" style="width: 66px; text-align: right;">0.6 / 16G</span></div>
+          <div style="display: flex; align-items: center; gap: 10px;"><span class="mono" style="font-size: 11px; width: 110px; color: #c7ccd4;">GPU 2 · 3090</span><div class="vbar" style="flex-grow: 1;"><div class="vfill" style="width: 8%;"></div></div><span class="mono hint" style="width: 66px; text-align: right;">1.9 / 24G</span></div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="h">Installs &amp; folders</div>
+        <div class="sub pathrow"><span class="hint" style="width: 90px; flex: none;">Speech engine</span><span class="mono" style="font-size: 11px; color: #c7ccd4;">G:\Index_TTS_v5\Premium_IndexTTS2_SECourses</span><span class="dot" style="background: #0f9f7f; margin-left: auto;"></span></div>
+        <div class="sub pathrow" style="margin-top: 8px;"><span class="hint" style="width: 90px; flex: none;">RVC trainer</span><span class="mono" style="font-size: 11px; color: #c7ccd4;">D:\Applio</span><span class="dot" style="background: #0f9f7f; margin-left: auto;"></span></div>
+        <div class="sub pathrow" style="margin-top: 8px;"><span class="hint" style="width: 90px; flex: none;">Voice library</span><span class="mono" style="font-size: 11px; color: #c7ccd4;">E:\vs_code_projects\AIO_VoiceForge\characters</span><span class="dot" style="background: #0f9f7f; margin-left: auto;"></span></div>
+        <div class="hint" style="margin-top: 10px;">A grey dot means the path exists but the install is incomplete — the row says what's missing.</div>
+      </div>
+    </div>
+  </div>
+</div>
+</x-dc>
+<script data-dc-script data-props='{}'>
+class Component extends DCLogic {
+  renderVals() { return {}; }
+}
+</script>
+</body>
+</html>

@@ -1,0 +1,15 @@
+{
+  "artboards": [
+    { "file": "Main.dc.html", "title": "1 · Speak", "x": 0, "y": 0, "w": 1280, "h": 920 },
+    { "file": "Capture.dc.html", "title": "2 · Capture Voices", "x": 1360, "y": 0, "w": 1280, "h": 960 },
+    { "file": "Train.dc.html", "title": "3 · Train", "x": 2720, "y": 0, "w": 1280, "h": 1060 },
+    { "file": "Advanced.dc.html", "title": "4 · Advanced", "x": 4080, "y": 0, "w": 1280, "h": 920 },
+    { "file": "SpeakPhone.dc.html", "title": "Speak on a phone", "x": 5440, "y": 0, "w": 390, "h": 844 }
+  ],
+  "annotations": [
+    { "id": "direction", "x": 0, "y": -170, "w": 420, "text": "The forge look carried over: quiet console keys with colored function edges, one hot ember key per page, JetBrains Mono for every readout. The masthead's device chips are on every tab and are adjustable (chevron); each chip states in use vs idle for ITS OWN work, so two subsystems sharing a card — like Speech and Tools both on GPU 0 here — stay unambiguous." },
+    { "id": "trained-voices", "x": 2720, "y": -170, "w": 420, "text": "Trained voices apply automatically: picking a voice that has a model speaks through it, and the Speak tab says so in plain text (which epoch, what strength). The old on/off toggle is gone — the Train tab owns epoch choice and strength instead." },
+    { "id": "capture-flow", "x": 1360, "y": -170, "w": 420, "text": "Capture is one left-to-right flow: bring audio in (files or URL), pick from the voices the scan found, name it and save. Saved voices show up in Speak and Train immediately." }
+  ],
+  "launch": { "view": "canvas" }
+}

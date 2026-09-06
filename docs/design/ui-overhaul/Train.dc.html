@@ -1,0 +1,185 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,700;12..96,800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <style>
+    body { margin: 0; font-family: ui-sans-serif, system-ui, "Segoe UI", sans-serif; color: #eef0f3; background: #131519; }
+    a { color: #ff7a3d; } a:hover { color: #e6470f; }
+    .mono { font-family: "JetBrains Mono", ui-monospace, monospace; font-variant-numeric: tabular-nums; }
+    .brico { font-family: "Bricolage Grotesque", ui-sans-serif, sans-serif; letter-spacing: -0.02em; }
+    .panel { background: #1b1e24; border: 1px solid rgba(255,255,255,.08); border-radius: 18px; padding: 16px; }
+    .sub { background: #22262d; border: 1px solid rgba(255,255,255,.08); border-radius: 14px; padding: 13px; }
+    .h { font-family: "Bricolage Grotesque", sans-serif; font-weight: 700; font-size: 15px; letter-spacing: -0.02em; margin: 0 0 12px; padding-bottom: 9px; border-bottom: 1px solid rgba(255,255,255,.08); }
+    .hint { font-size: 12px; color: #8a8f98; line-height: 1.45; }
+    .key { min-height: 44px; border-radius: 12px; border: 1px solid rgba(255,255,255,.14); border-bottom-width: 3px; background: linear-gradient(180deg,#3d424b,#262a31); color: #eef0f3; font-weight: 650; font-size: 13.5px; display: inline-flex; align-items: center; justify-content: center; gap: 8px; padding: 0 20px; position: relative; white-space: nowrap; flex: none; }
+    .key::after { content: ""; position: absolute; left: 10px; right: 10px; bottom: 4px; height: 3px; border-radius: 2px; background: var(--edge, transparent); }
+    .dev { display: flex; align-items: center; gap: 7px; font-family: "JetBrains Mono", monospace; font-size: 10.5px; color: #c7ccd4; background: #1b1e24; border: 1px solid rgba(255,255,255,.1); border-radius: 8px; padding: 6px 10px; }
+    .dot { width: 7px; height: 7px; border-radius: 50%; flex: none; }
+    .badge { font-family: "JetBrains Mono", monospace; font-size: 9.5px; letter-spacing: .08em; text-transform: uppercase; border-radius: 6px; padding: 3px 7px; }
+    .track { height: 6px; border-radius: 3px; background: #2c333d; position: relative; }
+    .fill { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 3px; background: #e6470f; }
+    .thumb { position: absolute; top: 50%; width: 16px; height: 16px; border-radius: 50%; background: #fdfcfa; border: 1px solid rgba(60,56,50,.4); transform: translate(-50%,-50%); box-shadow: 0 1px 3px rgba(0,0,0,.4); }
+    .row { display: grid; grid-template-columns: 92px 64px 72px 96px 1fr 34px; gap: 10px; align-items: center; padding: 9px 13px; border-radius: 10px; }
+  </style>
+</helmet>
+<div style="width: 1280px; height: 1060px; display: flex; flex-direction: column; background: #131519; box-sizing: border-box;">
+
+  <div style="display: flex; align-items: center; gap: 14px; padding: 18px 28px 12px;">
+    <div class="brico" style="font-weight: 800; font-size: 26px; letter-spacing: -0.03em;">AIO <em style="font-style: normal; color: #e6470f;">Voice</em>Forge</div>
+    <div class="mono" style="font-size: 10.5px; letter-spacing: .14em; text-transform: uppercase; color: #8a8f98;">local voice studio</div>
+    <div style="margin-left: auto; display: flex; gap: 8px;">
+      <div class="dev"><span class="dot" style="background: #8a8f98;"></span>SPEECH&nbsp;·&nbsp;GPU 0&nbsp;·&nbsp;idle<svg width="9" height="9" viewBox="0 0 10 10" fill="none" stroke="#8a8f98" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 4 5 6.5 7.5 4"></path></svg></div>
+      <div class="dev"><span class="dot" style="background: #8a8f98;"></span>TOOLS&nbsp;·&nbsp;GPU 1&nbsp;·&nbsp;idle<svg width="9" height="9" viewBox="0 0 10 10" fill="none" stroke="#8a8f98" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 4 5 6.5 7.5 4"></path></svg></div>
+      <div class="dev"><span class="dot" style="background: #e6470f;"></span>TRAIN&nbsp;·&nbsp;GPU 2&nbsp;·&nbsp;in use&nbsp;·&nbsp;18.9/24G<svg width="9" height="9" viewBox="0 0 10 10" fill="none" stroke="#8a8f98" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 4 5 6.5 7.5 4"></path></svg></div>
+    </div>
+  </div>
+
+  <div style="display: flex; gap: 4px; padding: 0 28px; border-bottom: 1px solid rgba(255,255,255,.08);">
+    <div class="brico" style="padding: 10px 18px; font-weight: 650; font-size: 14px; color: #8a8f98;">Speak</div>
+    <div class="brico" style="padding: 10px 18px; font-weight: 650; font-size: 14px; color: #8a8f98;">Capture Voices</div>
+    <div class="brico" style="padding: 10px 18px; font-weight: 700; font-size: 14px; color: #eef0f3; background: #1b1e24; border: 1px solid rgba(255,255,255,.1); border-bottom: none; border-radius: 10px 10px 0 0; box-shadow: inset 0 3px 0 #e6470f;">Train</div>
+    <div class="brico" style="padding: 10px 18px; font-weight: 650; font-size: 14px; color: #8a8f98;">Advanced</div>
+  </div>
+
+  <div style="display: grid; grid-template-columns: repeat(12, minmax(0, 1fr)); gap: 16px; padding: 18px 28px 24px; flex-grow: 1; box-sizing: border-box;">
+
+    <!-- Left column: voice, readiness, lane, run -->
+    <div style="grid-column: span 6; display: flex; flex-direction: column; gap: 16px;">
+      <div class="panel">
+        <div class="h">Voice to train</div>
+        <div class="hint" style="margin-bottom: 7px;">Which voice</div>
+        <div class="sub" style="display: flex; align-items: center; gap: 12px;">
+          <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="#ff7a3d" stroke-width="1.5" stroke-linecap="round"><rect x="7" y="2.5" width="6" height="10" rx="3"></rect><path d="M4 9.5a6 6 0 0 0 12 0"></path><path d="M10 15.5V18"></path></svg>
+          <div style="font-weight: 650; font-size: 14.5px; flex-grow: 1;">Grandma June</div>
+          <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="#8a8f98" stroke-width="1.5" stroke-linecap="round"><path d="M3 5.5 7 9.5l4-4"></path></svg>
+        </div>
+        <div style="display: flex; gap: 24px; margin-top: 12px; align-items: center;">
+          <div><div class="mono" style="font-size: 19px; font-weight: 600;">14</div><div class="hint">clips</div></div>
+          <div><div class="mono" style="font-size: 19px; font-weight: 600;">17:32</div><div class="hint">of audio — target is 10:00, you're set</div></div>
+          <div class="hint" style="margin-left: auto; max-width: 220px;">No model yet — this voice speaks from its clips alone. Training below creates one.</div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="h">Which kind of model</div>
+        <div style="display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px;">
+          <div class="sub" style="border-color: rgba(230,71,15,.55);">
+            <div style="display: flex; align-items: center; gap: 8px;">
+              <span class="dot" style="background: #e6470f;"></span>
+              <span style="font-weight: 700; font-size: 13.5px;">Full voice — TTS LoRA</span>
+            </div>
+            <div class="hint" style="margin-top: 7px;">The speech engine itself learns the voice: pace, style, and sound. About 70 min on this dataset. Recommended.</div>
+            <div class="mono hint" style="margin-top: 8px; display: flex; align-items: center; gap: 6px;"><span class="dot" style="background: #0f9f7f; width: 6px; height: 6px;"></span>engine ready · V5</div>
+          </div>
+          <div class="sub">
+            <div style="display: flex; align-items: center; gap: 8px;">
+              <span class="dot" style="background: #3a3f47;"></span>
+              <span style="font-weight: 650; font-size: 13.5px; color: #c7ccd4;">Voice converter — RVC</span>
+            </div>
+            <div class="hint" style="margin-top: 7px;">Converts generated audio into the voice afterwards. Faster, lighter, keeps the engine's own pacing.</div>
+            <div class="mono hint" style="margin-top: 8px; display: flex; align-items: center; gap: 6px;"><span class="dot" style="background: #0f9f7f; width: 6px; height: 6px;"></span>trainer ready · Applio</div>
+          </div>
+        </div>
+        <div style="display: flex; align-items: center; gap: 12px; margin-top: 14px;">
+          <div class="sub" style="display: flex; gap: 9px; padding: 10px 13px; align-items: center; flex-grow: 1;">
+            <svg width="15" height="15" viewBox="0 0 15 15" fill="none" stroke="#c8912a" stroke-width="1.4" style="flex: none;"><rect x="2" y="2" width="11" height="11" rx="3"></rect></svg>
+            <span style="font-size: 12.5px; color: #d7ba7e;">Confirm — this holds GPU 2 for about an hour</span>
+          </div>
+          <div class="key" style="--edge: #c8912a;">Start training</div>
+        </div>
+        <div class="mono hint" style="margin-top: 8px;">training always runs on GPU 2 · 3090 24G — the one card with room for it, so there's no device choice here</div>
+      </div>
+
+      <div class="panel">
+        <div class="h">Live run</div>
+        <div class="track" style="margin: 4px 0 10px;"><div class="fill" style="width: 62%;"></div></div>
+        <div class="mono" style="font-size: 11.5px; color: #c7ccd4; display: flex; gap: 18px;">
+          <span>train · epoch 6/10</span><span>step 341/560</span><span>loss 5.44</span><span>eta 16m</span>
+          <span style="margin-left: auto; color: #ffb089;">vram 18.9/24G</span>
+        </div>
+        <div style="display: flex; gap: 10px; margin-top: 12px;">
+          <div class="key" style="min-height: 38px; font-size: 12.5px; border-color: #c23b52; background: transparent; color: #c23b52;">Request stop</div>
+          <span class="hint" style="align-self: center;">finishes the current step, keeps every checkpoint so far</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Right column: checkpoints -->
+    <div style="grid-column: span 6; display: flex; flex-direction: column; gap: 16px;">
+      <div class="panel" style="flex-grow: 1; display: flex; flex-direction: column;">
+        <div class="h">Pick the epoch that sounds right</div>
+        <div class="hint" style="margin-bottom: 10px;">Every epoch keeps a checkpoint and a spoken sample. Lower val is better; the engine's own eval marks its pick.</div>
+
+        <div class="row mono" style="font-size: 10px; color: #8a8f98; text-transform: uppercase; letter-spacing: .08em; padding-top: 0; padding-bottom: 4px;">
+          <span>checkpoint</span><span>val</span><span>phase</span><span>sample</span><span></span><span></span>
+        </div>
+
+        <div class="row sub" style="border-color: rgba(230,71,15,.55);">
+          <span style="font-size: 13px; font-weight: 650;">best · ep 5</span>
+          <span class="mono" style="font-size: 12px;">5.28</span>
+          <span class="badge" style="border: 1px solid rgba(15,159,127,.5); color: #7fd8c2;">best</span>
+          <svg width="64" height="20" viewBox="0 0 64 20" fill="none"><circle cx="10" cy="10" r="8" stroke="rgba(255,255,255,.25)"></circle><path d="M8 6.5v7l5-3.5z" fill="#eef0f3"></path><path d="M24 10h3M31 6v8M39 4v12M47 8v4M55 6v8" stroke="#6b7280" stroke-width="2" stroke-linecap="round"></path></svg>
+          <span class="badge" style="background: rgba(230,71,15,.16); color: #ffb089; border: 1px solid rgba(230,71,15,.4); justify-self: start;">recommended · in use</span>
+          <svg width="15" height="15" viewBox="0 0 15 15" fill="none" stroke="#ffb089" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="m7.5 1.5 1.8 3.8 4.2.6-3 2.9.7 4.2-3.7-2-3.7 2 .7-4.2-3-2.9 4.2-.6z"></path></svg>
+        </div>
+        <div class="row">
+          <span style="font-size: 13px; color: #c7ccd4;">epoch 4</span>
+          <span class="mono" style="font-size: 12px; color: #c7ccd4;">5.61</span>
+          <span class="badge" style="border: 1px solid rgba(255,255,255,.14); color: #8a8f98;">improving</span>
+          <svg width="64" height="20" viewBox="0 0 64 20" fill="none"><circle cx="10" cy="10" r="8" stroke="rgba(255,255,255,.25)"></circle><path d="M8 6.5v7l5-3.5z" fill="#c7ccd4"></path><path d="M24 10h3M31 7v6M39 5v10M47 9v2M55 7v6" stroke="#4b5563" stroke-width="2" stroke-linecap="round"></path></svg>
+          <span></span><span></span>
+        </div>
+        <div class="row">
+          <span style="font-size: 13px; color: #c7ccd4;">epoch 6</span>
+          <span class="mono" style="font-size: 12px; color: #c7ccd4;">5.52</span>
+          <span class="badge" style="border: 1px solid rgba(255,255,255,.14); color: #8a8f98;">plateau</span>
+          <svg width="64" height="20" viewBox="0 0 64 20" fill="none"><circle cx="10" cy="10" r="8" stroke="rgba(255,255,255,.25)"></circle><path d="M8 6.5v7l5-3.5z" fill="#c7ccd4"></path><path d="M24 10h3M31 7v6M39 5v10M47 9v2M55 7v6" stroke="#4b5563" stroke-width="2" stroke-linecap="round"></path></svg>
+          <span></span><span></span>
+        </div>
+        <div class="row" style="opacity: .6;">
+          <span style="font-size: 13px; color: #c7ccd4;">epoch 8</span>
+          <span class="mono" style="font-size: 12px; color: #c7ccd4;">6.02</span>
+          <span class="badge" style="border: 1px solid rgba(200,145,42,.5); color: #d7ba7e;">overfitting</span>
+          <svg width="64" height="20" viewBox="0 0 64 20" fill="none"><circle cx="10" cy="10" r="8" stroke="rgba(255,255,255,.25)"></circle><path d="M8 6.5v7l5-3.5z" fill="#c7ccd4"></path><path d="M24 10h3M31 7v6M39 5v10M47 9v2M55 7v6" stroke="#4b5563" stroke-width="2" stroke-linecap="round"></path></svg>
+          <span></span><span></span>
+        </div>
+
+        <div style="height: 1px; background: rgba(255,255,255,.08); margin: 14px 0;"></div>
+
+        <div style="display: flex; align-items: center; gap: 12px;">
+          <span class="hint" style="width: 100px;">Voice strength</span>
+          <div class="track" style="flex-grow: 1;"><div class="fill" style="width: 50%;"></div><div class="thumb" style="left: 50%;"></div></div>
+          <span class="mono hint" style="width: 30px; text-align: right;">1.0</span>
+        </div>
+        <div class="hint" style="margin-top: 7px;">Below 1.0 blends toward the engine's neutral voice; above pushes the character harder.</div>
+
+        <div style="display: flex; gap: 10px; margin-top: 14px;">
+          <div class="key" style="--edge: #7a5cd6;">Use this checkpoint</div>
+          <span class="hint" style="align-self: center;">The Speak tab picks it up immediately — no toggle to remember.</span>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="h">Past runs</div>
+        <div class="mono" style="font-size: 11.5px; line-height: 1.9; color: #c7ccd4;">
+          2026-09-05&nbsp;&nbsp;test-narrator&nbsp;&nbsp;LoRA&nbsp;&nbsp;10 ep · 73 min · best ep 5 (val 5.28)<br>
+          2026-09-03&nbsp;&nbsp;test-narrator&nbsp;&nbsp;RVC&nbsp;&nbsp;&nbsp;200 ep · 41 min · WER 0.0 round-trip
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+</x-dc>
+<script data-dc-script data-props='{}'>
+class Component extends DCLogic {
+  renderVals() { return {}; }
+}
+</script>
+</body>
+</html>

@@ -1,0 +1,98 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,700;12..96,800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <style>
+    body { margin: 0; font-family: ui-sans-serif, system-ui, "Segoe UI", sans-serif; color: #eef0f3; background: #131519; }
+    a { color: #ff7a3d; } a:hover { color: #e6470f; }
+    .mono { font-family: "JetBrains Mono", ui-monospace, monospace; font-variant-numeric: tabular-nums; }
+    .brico { font-family: "Bricolage Grotesque", ui-sans-serif, sans-serif; letter-spacing: -0.02em; }
+    .panel { background: #1b1e24; border: 1px solid rgba(255,255,255,.08); border-radius: 16px; padding: 13px; }
+    .hint { font-size: 12px; color: #8a8f98; line-height: 1.45; }
+    .chip { border: 1px solid rgba(255,255,255,.14); border-radius: 999px; padding: 9px 14px; font-size: 12.5px; color: #c7ccd4; background: #22262d; }
+    .chip.on { border-color: #e6470f; color: #ffd9c4; background: rgba(230,71,15,.14); }
+    .track { height: 6px; border-radius: 3px; background: #2c333d; position: relative; }
+    .fill { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 3px; background: #e6470f; }
+    .thumb { position: absolute; top: 50%; width: 18px; height: 18px; border-radius: 50%; background: #fdfcfa; border: 1px solid rgba(60,56,50,.4); transform: translate(-50%,-50%); box-shadow: 0 1px 3px rgba(0,0,0,.4); }
+    .badge { font-family: "JetBrains Mono", monospace; font-size: 9px; letter-spacing: .08em; text-transform: uppercase; border-radius: 6px; padding: 3px 7px; }
+    .dot { width: 7px; height: 7px; border-radius: 50%; flex: none; }
+  </style>
+</helmet>
+<div style="width: 390px; height: 844px; display: flex; flex-direction: column; background: #131519; box-sizing: border-box; padding: 14px 14px 18px; gap: 12px;">
+
+  <!-- Compact masthead: wordmark + one device chip that expands -->
+  <div style="display: flex; align-items: center; gap: 10px;">
+    <div class="brico" style="font-weight: 800; font-size: 19px; letter-spacing: -0.03em;">AIO <em style="font-style: normal; color: #e6470f;">Voice</em>Forge</div>
+    <div class="mono" style="margin-left: auto; display: flex; align-items: center; gap: 6px; font-size: 10px; color: #c7ccd4; background: #1b1e24; border: 1px solid rgba(255,255,255,.1); border-radius: 8px; padding: 6px 9px;">
+      <span class="dot" style="background: #e6470f;"></span>GPU 0 · in use · 6.2/16G
+      <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="#8a8f98" stroke-width="1.4" stroke-linecap="round"><path d="M2.5 4 5 6.5 7.5 4"></path></svg>
+    </div>
+  </div>
+
+  <!-- Tab strip -->
+  <div style="display: flex; gap: 4px; border-bottom: 1px solid rgba(255,255,255,.08);">
+    <div class="brico" style="padding: 8px 12px; font-weight: 700; font-size: 13px; color: #eef0f3; box-shadow: inset 0 -2px 0 #e6470f;">Speak</div>
+    <div class="brico" style="padding: 8px 12px; font-weight: 650; font-size: 13px; color: #8a8f98;">Capture</div>
+    <div class="brico" style="padding: 8px 12px; font-weight: 650; font-size: 13px; color: #8a8f98;">Train</div>
+    <div class="brico" style="padding: 8px 12px; font-weight: 650; font-size: 13px; color: #8a8f98;">Advanced</div>
+  </div>
+
+  <!-- Voice -->
+  <div class="panel" style="display: flex; align-items: center; gap: 10px;">
+    <svg width="18" height="18" viewBox="0 0 20 20" fill="none" stroke="#ff7a3d" stroke-width="1.5" stroke-linecap="round"><rect x="7" y="2.5" width="6" height="10" rx="3"></rect><path d="M4 9.5a6 6 0 0 0 12 0"></path><path d="M10 15.5V18"></path></svg>
+    <div style="flex-grow: 1; min-width: 0;">
+      <div style="font-weight: 650; font-size: 14px;">Test Narrator (LibriVox)</div>
+      <div class="hint">trained voice · epoch 5</div>
+    </div>
+    <span class="badge" style="background: rgba(230,71,15,.16); color: #ffb089; border: 1px solid rgba(230,71,15,.4);">Trained</span>
+    <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="#8a8f98" stroke-width="1.5" stroke-linecap="round"><path d="M3 5.5 7 9.5l4-4"></path></svg>
+  </div>
+
+  <!-- Text -->
+  <div class="panel" style="flex-grow: 1; display: flex; flex-direction: column; gap: 8px;">
+    <div style="font-size: 14px; line-height: 1.55; color: #d7dbe1; flex-grow: 1;">The workshop had gone quiet by the time she reached the last page. Outside, the first snow of the season settled over the yard…</div>
+    <div class="mono hint">2 sections · ~14 s</div>
+  </div>
+
+  <!-- Delivery, condensed -->
+  <div class="panel" style="display: flex; flex-direction: column; gap: 11px;">
+    <div style="display: flex; gap: 7px; overflow: hidden;">
+      <span class="chip">Neutral</span><span class="chip on">Calm</span><span class="chip">Happy</span><span class="chip">Sad</span><span class="chip">Angry</span>
+    </div>
+    <div style="display: flex; align-items: center; gap: 10px;">
+      <span class="hint" style="width: 52px;">Speed</span>
+      <div class="track" style="flex-grow: 1;"><div class="fill" style="width: 50%;"></div><div class="thumb" style="left: 50%;"></div></div>
+      <span class="mono hint" style="width: 30px; text-align: right;">1.0×</span>
+    </div>
+    <div style="display: flex; align-items: center; gap: 10px;">
+      <span class="hint" style="width: 52px;">Pitch</span>
+      <div class="track" style="flex-grow: 1;"><div class="thumb" style="left: 50%;"></div></div>
+      <span class="mono hint" style="width: 30px; text-align: right;">0 st</span>
+    </div>
+    <div style="display: flex; align-items: center; gap: 8px;">
+      <span class="hint">Tone: Natural</span>
+      <a href="#" style="margin-left: auto; font-size: 12px;">More in Advanced</a>
+    </div>
+  </div>
+
+  <!-- Generate -->
+  <div style="min-height: 54px; border-radius: 12px; border: 1px solid rgba(122,34,4,.75); border-bottom-width: 3px; color: #fff4ec; font-weight: 750; font-size: 15px; letter-spacing: .02em; display: flex; align-items: center; justify-content: center; gap: 10px; text-shadow: 0 1px 0 rgba(80,20,0,.55); background: radial-gradient(120% 90% at 50% 0%, rgba(255,176,122,.5), transparent 52%), linear-gradient(180deg, #ff7a3d 0%, #e6470f 52%, #a02804 100%); box-shadow: 0 8px 20px rgba(209,49,11,.32), 0 1px 0 rgba(255,226,205,.45) inset;">
+    <svg width="17" height="17" viewBox="0 0 18 18" fill="none" stroke="#fff4ec" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 3.5v11l10-5.5z"></path></svg>
+    Generate Speech
+  </div>
+  <div class="mono hint" style="text-align: center;">IndexTTS-2.5 · GPU 0 · LoRA ep 5 @ 1.0</div>
+</div>
+</x-dc>
+<script data-dc-script data-props='{}'>
+class Component extends DCLogic {
+  renderVals() { return {}; }
+}
+</script>
+</body>
+</html>
