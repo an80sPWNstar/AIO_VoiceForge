@@ -105,6 +105,7 @@ import webui_voice_shaping as voice_shaping
 import webui_tone_presets as tone_presets
 import webui_character_handlers as character_handlers
 import webui_segmentation_handlers as segmentation_handlers
+import webui_training_handlers as training_handlers
 import audio_segmentation as segmentation
 from webui_assets import (
     APP_ASSETS_DIR,
@@ -1731,6 +1732,12 @@ with gr.Blocks(title=APP_TITLE, theme=theme, css=APP_CSS, head=APP_HEAD) as demo
                                         variant="secondary")
 
         sg_state = gr.State(None)
+
+    # Unlike the older tabs, this one builds AND wires itself in its own
+    # module — a new tab has no re-indent cost, and this file is already past
+    # the split threshold the September review recorded.
+    with gr.Tab("Train Voice"):
+        training_handlers.build_training_tab()
 
 
 
