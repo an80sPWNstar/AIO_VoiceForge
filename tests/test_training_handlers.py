@@ -634,6 +634,10 @@ class BuildTests(_TempLibrary):
         self.assertTrue(len(d) > 0)
         for v in d.values():
             self.assertTrue(isinstance(v, (gr.Component, type(None))))
+        # The speak controls moved here from the character panel (2026-09-06);
+        # the tab must expose them so the holder wiring exists.
+        self.assertIn("speak", d)
+        self.assertIn("strength", d)
 
     def test_initial_state_shape(self):
         res = training.initial_state(root=self.root)

@@ -413,37 +413,12 @@ with gr.Blocks(title=APP_TITLE, theme=theme, css=APP_CSS, head=APP_HEAD) as demo
                             character_add_btn = gr.Button(
                                 "Add Clip to Selected Voice", variant="secondary",
                                 elem_classes=["action-button"])
-                            character_train_btn = gr.Button(
-                                "Train RVC Model", variant="secondary",
-                                elem_classes=["action-button"])
-                        with gr.Row():
-                            character_lora_btn = gr.Button(
-                                "Train TTS LoRA", variant="secondary",
-                                elem_classes=["action-button"])
                         # Deleting a library entry is not undoable, so the button
                         # arms on the first press the same way cancel does.
                         character_delete_confirm = gr.Checkbox(
                             label="Confirm delete", value=False, visible=True,
                             info="Tick this, then press Delete.",
                         )
-                        # Training holds a GPU for minutes to hours, so it arms
-                        # the same way: tick, then press Train.
-                        character_train_confirm = gr.Checkbox(
-                            label="Confirm training", value=False, visible=True,
-                            info="Tick this, then press a Train button. "
-                                 "Uses every clip this voice holds.",
-                        )
-                        with gr.Row():
-                            character_lora_speak = gr.Checkbox(
-                                label="Speak with trained voice (LoRA)",
-                                value=False,
-                                info="The TTS itself speaks the trained voice "
-                                     "— pace and style included.",
-                            )
-                            character_lora_strength = gr.Slider(
-                                label="Trained voice strength",
-                                minimum=0.0, maximum=2.0, step=0.05, value=1.0,
-                            )
                         character_status = gr.Textbox(
                             label="Character Library Status",
                             value="", interactive=False, visible=False,
@@ -2229,37 +2204,6 @@ with gr.Blocks(title=APP_TITLE, theme=theme, css=APP_CSS, head=APP_HEAD) as demo
         outputs=[prompt_audio, reference_status],
         queue=False,
     )
-
-    # queue=True, unlike its siblings: this handler is a generator that holds
-    # a GPU for the length of a training run, and only the queue can stream
-    # its progress yields to the browser.
-    character_train_btn.click(
-        character_handlers.train_character_ui,
-        inputs=[character_mode, character_select, character_train_confirm],
-        outputs=[character_select, character_name, character_summary, character_status],
-        queue=True,
-    )
-
-    character_lora_btn.click(
-        character_handlers.train_character_lora_ui,
-        inputs=[character_mode, character_select, character_train_confirm],
-        outputs=[character_select, character_name, character_summary, character_status],
-        queue=True,
-    )
-
-    # Selection changes re-run the toggle handler so the holder always points
-    # at the CURRENT character's adapter — or clears when it has none.
-    for _lora_event in (character_lora_speak.change,
-                        character_lora_strength.release,
-                        character_select.change):
-        _lora_event(
-            character_handlers.on_lora_speak_change,
-            inputs=[character_lora_speak, character_select,
-                    character_lora_strength],
-            outputs=[character_status],
-            queue=False,
-            show_progress="hidden",
-        )
 
     character_save_btn.click(
         character_handlers.save_reference_as_new_voice_ui,

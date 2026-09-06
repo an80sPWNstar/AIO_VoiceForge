@@ -757,6 +757,18 @@ def build_training_tab(root: Optional[str] = None) -> Dict[str, Any]:
     sample_audio = gr.Audio(label="Epoch sample", interactive=False, value=None)
     use_btn = gr.Button("Use this checkpoint")
 
+    with gr.Row():
+        speak_cb = gr.Checkbox(
+            label="Speak with trained voice (LoRA)",
+            value=False,
+            info="The TTS itself speaks the trained voice "
+                 "— pace and style included.",
+        )
+        strength_sl = gr.Slider(
+            label="Trained voice strength",
+            minimum=0.0, maximum=2.0, step=0.05, value=1.0,
+        )
+
     # Wire events
     mode_dd.change(on_mode_change, [mode_dd], [voice_dd, readiness_md, ckpt_dd, sample_audio, detail_md], queue=False)
     voice_dd.change(refresh_training_panel, [mode_dd, voice_dd], [readiness_md, ckpt_dd, sample_audio, detail_md], queue=False)
@@ -766,6 +778,15 @@ def build_training_tab(root: Optional[str] = None) -> Dict[str, Any]:
     stop_btn.click(stop_training_ui, [mode_dd, voice_dd], [status_tb], queue=False)
     ckpt_dd.change(on_checkpoint_change, [mode_dd, voice_dd, ckpt_dd], [sample_audio, detail_md], queue=False)
     use_btn.click(use_checkpoint_ui, [mode_dd, voice_dd, ckpt_dd], [status_tb, readiness_md], queue=False)
+
+    for _lora_event in (speak_cb.change, strength_sl.release, voice_dd.change):
+        _lora_event(
+            characters.on_lora_speak_change,
+            [speak_cb, voice_dd, strength_sl],
+            [status_tb],
+            queue=False,
+            show_progress="hidden",
+        )
 
     return {
         "mode": mode_dd,
@@ -783,4 +804,6 @@ def build_training_tab(root: Optional[str] = None) -> Dict[str, Any]:
         "detail": detail_md,
         "sample": sample_audio,
         "use": use_btn,
+        "speak": speak_cb,
+        "strength": strength_sl,
     }
