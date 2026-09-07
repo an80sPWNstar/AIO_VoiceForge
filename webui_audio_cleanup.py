@@ -51,11 +51,29 @@ PROGRESS_POLL_SECONDS = 0.25
 # Cleanup of a long clip is slow but bounded; a run past this is hung.
 CLEANUP_TIMEOUT_SECONDS = 7200
 
+# How often to emit a heartbeat when no real progress event arrives.
+# The heartbeat proves the run has not exited; it does not prove progress is being made.
+HEARTBEAT_SECONDS = 15
+
 SETUP_HINT = (
     "The audio cleanup environment is not installed. Run "
     "install_audio_cleanup.bat from the app folder "
     "(a one-time ~4 GB download), then restart the app."
 )
+
+
+def _format_duration(seconds: int) -> str:
+    """Format a duration in seconds as a human-readable string.
+
+    Returns a string like "1m 15s" or "8s". Minutes and seconds only.
+    """
+    if seconds < 60:
+        return f"{seconds}s"
+    minutes = seconds // 60
+    remaining_seconds = seconds % 60
+    if remaining_seconds == 0:
+        return f"{minutes}m"
+    return f"{minutes}m {remaining_seconds}s"
 
 
 class CleanupError(RuntimeError):
@@ -90,6 +108,7 @@ class CleanupProgress:
     stage: Optional[str]
     message: str
     fraction: Optional[float] = None
+    heartbeat: bool = False
 
 
 ProgressCallback = Callable[[CleanupProgress], None]
@@ -497,6 +516,12 @@ def _run_worker(
                 raise CleanupCancelled("Cleanup stopped.")
 
             deadline = time.monotonic() + CLEANUP_TIMEOUT_SECONDS
+            last_event_stage: Optional[str] = None
+            last_event_fraction: Optional[float] = None
+            last_event_message = ""
+            last_real_event_time = time.monotonic()
+            last_heartbeat_time = time.monotonic()
+
             while process.poll() is None:
                 # Check each polling pass for a user cancellation.
                 should_cancel = False
@@ -507,9 +532,40 @@ def _run_worker(
                     _kill_process(process)
                     raise CleanupCancelled("Cleanup stopped.")
 
+                # Drain real events from the worker and track the latest one.
                 for event in tail.drain():
                     log.append(event.message)
                     report(event)
+                    last_event_stage = event.stage
+                    last_event_fraction = event.fraction
+                    last_event_message = event.message
+                    last_real_event_time = time.monotonic()
+                    last_heartbeat_time = last_real_event_time
+
+                # Emit a heartbeat if enough time has passed since the last event.
+                # The heartbeat proves the run has not exited; it does not assert progress.
+                # So it reports elapsed time in the stage, not a "still working" message.
+                # Gate on the last HEARTBEAT, not the last real event. Gating on
+                # the event would satisfy the condition on every pass once the
+                # stage went quiet, and this loop polls four times a second --
+                # a heartbeat meant to reassure would become a flood of updates
+                # for the whole of the stage it exists to describe.
+                now = time.monotonic()
+                if now - last_heartbeat_time >= HEARTBEAT_SECONDS:
+                    elapsed_seconds = int(now - last_real_event_time)
+                    # Nothing has been reported yet while the models load, and
+                    # " (15s)" with no subject reads like a bug.
+                    prefix = last_event_message or "Working"
+                    heartbeat_message = f"{prefix} ({_format_duration(elapsed_seconds)})"
+                    heartbeat = CleanupProgress(
+                        stage=last_event_stage,
+                        message=heartbeat_message,
+                        fraction=last_event_fraction,
+                        heartbeat=True,
+                    )
+                    report(heartbeat)
+                    last_heartbeat_time = now
+
                 if time.monotonic() > deadline:
                     process.kill()
                     raise CleanupError(

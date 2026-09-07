@@ -674,7 +674,9 @@ def cleanup_run_ui(
         event = events.get()
         if event is finished:
             break
-        lines.append(event.message)
+        # Heartbeats move the progress bar but do not pollute the visible log.
+        if not event.heartbeat:
+            lines.append(event.message)
         if event.fraction is not None:
             progress(event.fraction, desc=event.message)
             last_fraction = event.fraction
@@ -880,7 +882,9 @@ def voice_extract_run_ui(
         event = events.get()
         if event is finished:
             break
-        lines.append(event.message)
+        # Heartbeats move the progress bar but do not pollute the visible log.
+        if not event.heartbeat:
+            lines.append(event.message)
         if event.fraction is not None:
             progress(event.fraction, desc=event.message)
             last_fraction = event.fraction
