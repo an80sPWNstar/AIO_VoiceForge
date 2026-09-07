@@ -48,7 +48,14 @@ WANTED = [
     # Character library (Audio Generation tab)
     "Save Loaded Voice As",
     "Add Clip to Selected Voice",
-    "Train RVC Model",
+    # Train Voice tab. "Train RVC Model" used to be listed here as a character
+    # panel button; 5c3d203 moved training off that panel and this list was not
+    # updated with it, so the check sat red from then until the ingestion split
+    # noticed. A label removed from the app has to be removed from here too --
+    # a permanently-red check is one nobody reads.
+    "Start training",
+    "Request stop",
+    "Use this checkpoint",
     "Confirm training",
     # The two earlier stages of the ingestion pipeline
     "Clean Up Audio",
