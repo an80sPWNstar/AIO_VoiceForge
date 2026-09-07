@@ -14,11 +14,13 @@ the callback shape of webui_media_fetch so the UI code for both tabs looks the
 same.
 """
 
+import itertools
 import json
 import os
 import shutil
 import subprocess
 import tempfile
+import threading
 import time
 from dataclasses import dataclass
 from typing import Callable, Dict, List, Optional
@@ -58,6 +60,27 @@ SETUP_HINT = (
 
 class CleanupError(RuntimeError):
     """A cleanup run failed for a reason worth showing the user verbatim."""
+
+
+class CleanupCancelled(CleanupError):
+    """Raised when a run was stopped by the user rather than by a fault."""
+
+
+# --------------------------------------------------------------------------
+# Cancellation state: token-based to prevent stale-flag issues
+# --------------------------------------------------------------------------
+
+# A plain cancel_requested boolean cannot tell "stop this run" from
+# "a cancel left over from a run that already ended"; using a token
+# ensures a cancelled job cannot make the NEXT job cancel itself.
+_CANCEL_LOCK = threading.Lock()
+_RUN_COUNTER = itertools.count(1)
+_ACTIVE_TOKEN = None        # Token of the run in progress, or None.
+_ACTIVE_PROCESS = None      # Its Popen once started, or None.
+_CANCELLED_TOKEN = None     # Token the user asked to cancel, or None.
+
+# How long to wait after tree-kill for the process to be gone.
+PROCESS_WAIT_GRACE_SECONDS = 3.0
 
 
 @dataclass(frozen=True)
@@ -252,6 +275,60 @@ class _ProgressTail:
 
 
 # --------------------------------------------------------------------------
+# Cancellation API
+# --------------------------------------------------------------------------
+
+def request_cancel() -> bool:
+    """Ask the running cleanup job to stop. True if there was one to stop."""
+    global _ACTIVE_TOKEN, _ACTIVE_PROCESS, _CANCELLED_TOKEN
+
+    with _CANCEL_LOCK:
+        if _ACTIVE_TOKEN is None:
+            return False
+        _CANCELLED_TOKEN = _ACTIVE_TOKEN
+        process_ref = _ACTIVE_PROCESS
+
+    # Never hold the lock across the kill, following engine_worker's pattern.
+    if process_ref is not None:
+        _kill_process(process_ref)
+    return True
+
+
+def cancel_is_complete() -> bool:
+    """True when no cleanup process is still running."""
+    with _CANCEL_LOCK:
+        return _ACTIVE_TOKEN is None
+
+
+def _kill_process(process: subprocess.Popen) -> None:
+    """Kill a process and everything it spawned.
+
+    Mirrors engine_worker's tree-kill: taskkill /T /F on Windows,
+    os.killpg elsewhere. Never call this holding the cancellation lock.
+    """
+    if process.poll() is not None:
+        return
+    try:
+        if os.name == "nt":
+            subprocess.run(
+                ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+            )
+        else:
+            import signal
+
+            os.killpg(os.getpgid(process.pid), signal.SIGKILL)
+    except (ProcessLookupError, PermissionError, OSError):
+        pass
+    try:
+        process.wait(timeout=PROCESS_WAIT_GRACE_SECONDS)
+    except subprocess.TimeoutExpired:
+        pass
+
+
+# --------------------------------------------------------------------------
 # Running a cleanup
 # --------------------------------------------------------------------------
 
@@ -377,11 +454,21 @@ def _run_worker(
     """Run the worker subprocess and collect its result.
 
     Handles Popen, tail, deadline, drain, and _read_result. Returns the
-    parsed result dict from the worker's final JSON line.
+    parsed result dict from the worker's final JSON line. Checks for
+    cancellation signals and raises CleanupCancelled if stopped by the user.
     """
+    global _ACTIVE_TOKEN, _ACTIVE_PROCESS, _CANCELLED_TOKEN
+
     def report(event: CleanupProgress) -> None:
         if progress_callback is not None:
             progress_callback(event)
+
+    # Claim a token before Popen so that a cancellation arriving during
+    # startup (model loading, etc.) is not lost.
+    run_token = next(_RUN_COUNTER)
+    with _CANCEL_LOCK:
+        _ACTIVE_TOKEN = run_token
+        _CANCELLED_TOKEN = None
 
     report(CleanupProgress(None, finished_message, 0.0))
 
@@ -399,8 +486,27 @@ def _run_worker(
                 stderr=err,
                 cwd=os.path.dirname(os.path.abspath(__file__)),
             )
+            # Register the process and check if it was already cancelled during startup.
+            should_cancel = False
+            with _CANCEL_LOCK:
+                _ACTIVE_PROCESS = process
+                if _CANCELLED_TOKEN == run_token:
+                    should_cancel = True
+            if should_cancel:
+                _kill_process(process)
+                raise CleanupCancelled("Cleanup stopped.")
+
             deadline = time.monotonic() + CLEANUP_TIMEOUT_SECONDS
             while process.poll() is None:
+                # Check each polling pass for a user cancellation.
+                should_cancel = False
+                with _CANCEL_LOCK:
+                    if _CANCELLED_TOKEN == run_token:
+                        should_cancel = True
+                if should_cancel:
+                    _kill_process(process)
+                    raise CleanupCancelled("Cleanup stopped.")
+
                 for event in tail.drain():
                     log.append(event.message)
                     report(event)
@@ -422,6 +528,14 @@ def _run_worker(
         return result
     except CleanupError:
         raise
+    finally:
+        # Clear the global state only if this run's token still matches.
+        # A run that has already been superseded must not clobber a newer run's state.
+        with _CANCEL_LOCK:
+            if _ACTIVE_TOKEN == run_token:
+                _ACTIVE_TOKEN = None
+                _ACTIVE_PROCESS = None
+                _CANCELLED_TOKEN = None
 
 
 def cleaned_output_path(source_path: str, output_root: str) -> str:

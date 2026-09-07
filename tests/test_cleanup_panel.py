@@ -218,6 +218,96 @@ class CleanupPanelBuildTests(unittest.TestCase):
             f"Save-target caption should be '{expected_caption}' but got '{actual_caption}'",
         )
 
+    def test_cancel_components_in_returned_dict(self):
+        """Test that cl_cancel_btn and cl_cancel_status are in the returned dict."""
+        with gr.Blocks() as demo:
+            upstream_path = gr.Textbox(value="", label="Upstream path")
+            ref_targets = ReferenceTargets(
+                audio=gr.Audio(),
+                status=gr.Textbox(),
+            )
+            char_targets = CharacterTargets(
+                mode=gr.Dropdown(),
+                select=gr.Dropdown(),
+                name=gr.Textbox(),
+                summary=gr.Markdown(),
+            )
+            ctx = PanelContext(
+                reference=ref_targets,
+                character=char_targets,
+                focus_generation_tab_js="",
+            )
+
+            result = webui_cleanup_panel.build_cleanup_panel(ctx, upstream_path)
+
+        # Assert both cancel components are in the dict
+        self.assertIn("cl_cancel_btn", result, "Missing component: cl_cancel_btn")
+        self.assertIn("cl_cancel_status", result, "Missing component: cl_cancel_status")
+
+    def test_cancel_button_is_stop_variant(self):
+        """Test that cl_cancel_btn is a Button with label 'Stop Cleanup'."""
+        with gr.Blocks() as demo:
+            upstream_path = gr.Textbox(value="", label="Upstream path")
+            ref_targets = ReferenceTargets(
+                audio=gr.Audio(),
+                status=gr.Textbox(),
+            )
+            char_targets = CharacterTargets(
+                mode=gr.Dropdown(),
+                select=gr.Dropdown(),
+                name=gr.Textbox(),
+                summary=gr.Markdown(),
+            )
+            ctx = PanelContext(
+                reference=ref_targets,
+                character=char_targets,
+                focus_generation_tab_js="",
+            )
+
+            result = webui_cleanup_panel.build_cleanup_panel(ctx, upstream_path)
+
+        # Check that cl_cancel_btn is a Button
+        self.assertIsInstance(
+            result["cl_cancel_btn"],
+            gr.Button,
+            "cl_cancel_btn should be a gr.Button",
+        )
+        # Check that its value/label is "Stop Cleanup"
+        self.assertEqual(
+            result["cl_cancel_btn"].value,
+            "Stop Cleanup",
+            "cl_cancel_btn label should be 'Stop Cleanup'",
+        )
+
+    def test_cancel_status_is_markdown(self):
+        """Test that cl_cancel_status is a Markdown component."""
+        with gr.Blocks() as demo:
+            upstream_path = gr.Textbox(value="", label="Upstream path")
+            ref_targets = ReferenceTargets(
+                audio=gr.Audio(),
+                status=gr.Textbox(),
+            )
+            char_targets = CharacterTargets(
+                mode=gr.Dropdown(),
+                select=gr.Dropdown(),
+                name=gr.Textbox(),
+                summary=gr.Markdown(),
+            )
+            ctx = PanelContext(
+                reference=ref_targets,
+                character=char_targets,
+                focus_generation_tab_js="",
+            )
+
+            result = webui_cleanup_panel.build_cleanup_panel(ctx, upstream_path)
+
+        # Check that cl_cancel_status is a Markdown component
+        self.assertIsInstance(
+            result["cl_cancel_status"],
+            gr.Markdown,
+            "cl_cancel_status should be a gr.Markdown",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

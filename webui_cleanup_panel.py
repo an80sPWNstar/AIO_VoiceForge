@@ -90,9 +90,20 @@ def build_cleanup_panel(ctx: PanelContext, upstream_path: Any) -> Dict[str, Any]
 
     with gr.Row():
         cl_run_btn = gr.Button("Clean Up Audio", variant="primary", scale=2)
+        # Scales are set against the LONGEST label, not evenly: "Send Cleaned
+        # to Reference Voice" is far wider than its neighbours and wraps to two
+        # lines if it gets an equal share. Adding a third key to this row is
+        # what first broke it.
         cl_send_btn = gr.Button(
-            "Send Cleaned to Reference Voice", variant="secondary", scale=1
+            "Send Cleaned to Reference Voice", variant="secondary", scale=3
         )
+        cl_cancel_btn = gr.Button("Stop Cleanup", variant="stop", scale=1)
+
+    # The status line sits BELOW the row, not in it. A Markdown in a row of
+    # keys takes width from them, and the first casualty was "Send Cleaned to
+    # Reference Voice" wrapping onto two lines -- the wrapping this project
+    # already ruled out once. Keys keep the row; prose goes underneath.
+    cl_cancel_status = gr.Markdown("")
 
     cl_progress = gr.HTML(value=webui_handlers.CLEANUP_PROGRESS_IDLE)
 
@@ -287,6 +298,15 @@ def build_cleanup_panel(ctx: PanelContext, upstream_path: Any) -> Dict[str, Any]
         + cl_voice_players
         + cl_voice_labels,
         show_progress="minimal",
+        concurrency_limit=1,  # Only one cleanup job at a time; a second click queues behind the first, which is why orphaned runs looked like a UI freeze.
+    )
+
+    cl_cancel_btn.click(
+        webui_handlers.cancel_cleanup_ui,
+        inputs=[],
+        outputs=[cl_cancel_status],
+        queue=False,  # LOAD-BEARING: queue=False means this runs immediately, not queued behind the cleanup job it is meant to cancel. Removing this would break cancellation.
+        show_progress="hidden",
     )
 
     cl_extract_btn.click(
@@ -362,6 +382,8 @@ def build_cleanup_panel(ctx: PanelContext, upstream_path: Any) -> Dict[str, Any]
         "cl_voice_mode": cl_voice_mode,
         "cl_run_btn": cl_run_btn,
         "cl_send_btn": cl_send_btn,
+        "cl_cancel_btn": cl_cancel_btn,
+        "cl_cancel_status": cl_cancel_status,
         "cl_progress": cl_progress,
         "cl_stages": cl_stages,
         "cl_vocal_model": cl_vocal_model,

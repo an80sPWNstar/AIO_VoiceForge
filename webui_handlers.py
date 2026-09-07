@@ -22,6 +22,7 @@ import platform
 import queue
 import subprocess
 import threading
+import time
 
 import gradio as gr
 
@@ -401,6 +402,10 @@ CLEANUP_PROGRESS_IDLE = render_progress_bar(0.0, "Idle")
 CLEANUP_LOG_LINES = MEDIA_FETCH_LOG_LINES
 CLEANUP_THREAD_JOIN_SECONDS = MEDIA_FETCH_THREAD_JOIN_SECONDS
 CLEANUP_NO_RESULT = ""
+# How long to wait for a cleanup cancellation to finish (process tree to die),
+# in seconds. The GPU is held until all subprocesses exit; returning success too
+# early leads to contention when the user starts another run.
+CANCEL_CLEANUP_WAIT_SECONDS = 10
 
 # Speaker mode radio labels. The values are the shared constants; only the
 # wording lives here.
@@ -564,6 +569,31 @@ def voice_id_from_choice(state, choice: str):
     return None
 
 
+def cancel_cleanup_ui() -> str:
+    """Stop the running cleanup job and confirm it actually died."""
+    try:
+        was_running = audio_cleanup.request_cancel()
+        if not was_running:
+            return "No cleanup was running."
+
+        # Poll for confirmation that the process tree has exited, guarding
+        # against the race where the UI reports "stopped" while the GPU is
+        # still held. A user who reads success starts another run and the two
+        # fight for the card.
+        start_time = time.time()
+        sleep_interval = 0.5  # seconds
+        while time.time() - start_time < CANCEL_CLEANUP_WAIT_SECONDS:
+            if audio_cleanup.cancel_is_complete():
+                return "Cleanup stopped."
+            time.sleep(sleep_interval)
+
+        # Timeout elapsed without confirmation. Report honestly so the user
+        # knows the GPU is still in use.
+        return "Cleanup is still shutting down. The GPU may not be fully free yet."
+    except Exception as exc:  # noqa: BLE001 - UI handler, must not raise
+        return f"Error stopping cleanup: {exc}"
+
+
 def cleanup_run_ui(
     fetched_path,
     uploaded_path,
@@ -626,6 +656,8 @@ def cleanup_run_ui(
                     keep_intermediates=bool(keep_intermediates),
                     progress_callback=events.put,
                 )
+        except audio_cleanup.CleanupCancelled:
+            outcome["cancelled"] = True
         except audio_cleanup.CleanupError as exc:
             outcome["error"] = str(exc)
         except Exception as exc:  # noqa: BLE001 - surfaced, never swallowed
@@ -667,6 +699,31 @@ def cleanup_run_ui(
         )
 
     thread.join(timeout=CLEANUP_THREAD_JOIN_SECONDS)
+
+    if "cancelled" in outcome:
+        # User stopped the run; report calmly rather than as a crash.
+        status = "Cleanup was cancelled."
+        lines.append(status)
+
+        voice_state_update = gr.update()
+        voice_radio_update = gr.update()
+        voices_group_update = gr.update(visible=False)
+        voice_audio_updates = [gr.update(value=None, visible=False) for _ in range(MAX_VOICE_ROWS)]
+        voice_label_updates_list = [gr.update(value="", visible=False) for _ in range(MAX_VOICE_ROWS)]
+
+        yield (
+            gr.update(value=render_progress_bar(last_fraction, status, done=True)),
+            gr.update(value=None),
+            gr.update(value=CLEANUP_NO_RESULT),
+            gr.update(value=status),
+            gr.update(value="\n".join(lines[-CLEANUP_LOG_LINES:])),
+            voice_state_update,
+            voice_radio_update,
+            voices_group_update,
+            *voice_audio_updates,
+            *voice_label_updates_list,
+        )
+        return
 
     if "error" in outcome:
         lines.append(outcome["error"])
@@ -802,6 +859,11 @@ def voice_extract_run_ui(
                 device=device,
                 progress_callback=events.put,
             )
+        except audio_cleanup.CleanupCancelled:
+            # Extraction runs the same worker as a cleanup pass, so Stop stops
+            # this too. Caught before CleanupError -- it is a subclass, and the
+            # base would otherwise swallow it and report a stop as a failure.
+            outcome["cancelled"] = True
         except audio_cleanup.CleanupError as exc:
             outcome["error"] = str(exc)
         except Exception as exc:  # noqa: BLE001 - surfaced, never swallowed
@@ -833,6 +895,22 @@ def voice_extract_run_ui(
         )
 
     thread.join(timeout=CLEANUP_THREAD_JOIN_SECONDS)
+
+    if "cancelled" in outcome:
+        # User stopped the run; report calmly rather than as a crash.
+        status = "Extraction was cancelled."
+        lines.append(status)
+        yield (
+            gr.update(value=render_progress_bar(
+                last_fraction, status, done=True)),
+            gr.update(value=None),
+            gr.update(value=CLEANUP_NO_RESULT),
+            gr.update(value=None),
+            gr.update(value=CLEANUP_NO_RESULT),
+            gr.update(value=status),
+            gr.update(value="\n".join(lines[-CLEANUP_LOG_LINES:])),
+        )
+        return
 
     if "error" in outcome:
         lines.append(outcome["error"])
