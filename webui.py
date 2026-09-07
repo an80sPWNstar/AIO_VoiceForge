@@ -375,15 +375,8 @@ with gr.Blocks(title=APP_TITLE, theme=theme, css=APP_CSS, head=APP_HEAD) as demo
 
                     gr.Markdown("#### Character Library", elem_classes="reference-subsection-title")
                     with gr.Group(elem_classes="reference-subsection"):
-                        _char_mode0, _char_choices0, _char_first0, _char_name0, _char_desc0 = (
+                        _char_choices0, _char_first0, _char_name0, _char_desc0 = (
                             character_handlers.initial_state()
-                        )
-                        character_mode = gr.Dropdown(
-                            label="Voice type",
-                            choices=character_handlers.mode_choices(),
-                            value=_char_mode0,
-                            interactive=True,
-                            info="One-shot voices hold reference clips. RVC voices hold a trained model.",
                         )
                         character_select = gr.Dropdown(
                             label="Voice",
@@ -1319,7 +1312,6 @@ with gr.Blocks(title=APP_TITLE, theme=theme, css=APP_CSS, head=APP_HEAD) as demo
             status=reference_status,
         ),
         character=CharacterTargets(
-            mode=character_mode,
             select=character_select,
             name=character_name,
             summary=character_summary,
@@ -1562,17 +1554,9 @@ with gr.Blocks(title=APP_TITLE, theme=theme, css=APP_CSS, head=APP_HEAD) as demo
     # name box, the summary and the status line. Keeping one shape means the
     # panel can never end up showing a name from one voice and clips from
     # another.
-    character_mode.change(
-        character_handlers.on_mode_change,
-        inputs=[character_mode],
-        outputs=[character_select, character_name, character_summary, character_status],
-        queue=False,
-        show_progress="hidden",
-    )
-
     character_select.change(
         character_handlers.on_character_change,
-        inputs=[character_mode, character_select],
+        inputs=[character_select],
         outputs=[character_name, character_summary, character_status],
         queue=False,
         show_progress="hidden",
@@ -1580,42 +1564,42 @@ with gr.Blocks(title=APP_TITLE, theme=theme, css=APP_CSS, head=APP_HEAD) as demo
 
     character_new_btn.click(
         character_handlers.create_character_ui,
-        inputs=[character_mode, character_name],
+        inputs=[character_name],
         outputs=[character_select, character_name, character_summary, character_status],
         queue=False,
     )
 
     character_rename_btn.click(
         character_handlers.rename_character_ui,
-        inputs=[character_mode, character_select, character_name],
+        inputs=[character_select, character_name],
         outputs=[character_select, character_name, character_summary, character_status],
         queue=False,
     )
 
     character_delete_btn.click(
         character_handlers.delete_character_ui,
-        inputs=[character_mode, character_select, character_delete_confirm],
+        inputs=[character_select, character_delete_confirm],
         outputs=[character_select, character_name, character_summary, character_status],
         queue=False,
     )
 
     character_use_btn.click(
         character_handlers.use_character_ui,
-        inputs=[character_mode, character_select],
+        inputs=[character_select],
         outputs=[prompt_audio, reference_status],
         queue=False,
     )
 
     character_save_btn.click(
         character_handlers.save_reference_as_new_voice_ui,
-        inputs=[character_mode, character_name, prompt_audio],
+        inputs=[character_name, prompt_audio],
         outputs=[character_select, character_name, character_summary, character_status],
         queue=False,
     )
 
     character_add_btn.click(
         character_handlers.add_reference_to_character_ui,
-        inputs=[character_mode, character_select, prompt_audio],
+        inputs=[character_select, prompt_audio],
         outputs=[character_select, character_name, character_summary, character_status],
         queue=False,
     )

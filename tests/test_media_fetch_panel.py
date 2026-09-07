@@ -21,7 +21,6 @@ class MediaFetchPanelBuildTest(unittest.TestCase):
                     status=gr.Textbox(),
                 ),
                 character=CharacterTargets(
-                    mode=gr.Dropdown(),
                     select=gr.Dropdown(),
                     name=gr.Textbox(),
                     summary=gr.Markdown(),
@@ -54,7 +53,6 @@ class MediaFetchPanelBuildTest(unittest.TestCase):
                     status=gr.Textbox(),
                 ),
                 character=CharacterTargets(
-                    mode=gr.Dropdown(),
                     select=gr.Dropdown(),
                     name=gr.Textbox(),
                     summary=gr.Markdown(),
@@ -92,7 +90,6 @@ class MediaFetchPanelBuildTest(unittest.TestCase):
                     status=gr.Textbox(),
                 ),
                 character=CharacterTargets(
-                    mode=gr.Dropdown(),
                     select=gr.Dropdown(),
                     name=gr.Textbox(),
                     summary=gr.Markdown(),
@@ -128,7 +125,6 @@ class MediaFetchPanelBuildTest(unittest.TestCase):
                     status=gr.Textbox(),
                 ),
                 character=CharacterTargets(
-                    mode=gr.Dropdown(),
                     select=gr.Dropdown(),
                     name=gr.Textbox(),
                     summary=gr.Markdown(),

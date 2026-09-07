@@ -947,23 +947,20 @@ def voice_extract_run_ui(
     )
 
 
-def save_voice_reference_ui(mode, slug, reference_path, label, root=None):
+def save_voice_reference_ui(slug, reference_path, label, root=None):
     """Save Reference To Voice pressed: file a reference clip under a voice.
 
     Mirrors save_segment_to_voice_ui in webui_segmentation_handlers.py.
     Returns the standard four panel outputs.
     """
-    if mode == store.MODE_RVC:
-        return characters.refresh_panel(
-            mode, slug, "An RVC voice holds a model, not clips.", root)
     if not slug:
-        return characters.refresh_panel(mode, slug, "Select a voice first.", root)
+        return characters.refresh_panel(slug, "Select a voice first.", root)
     if not reference_path or not os.path.isfile(reference_path):
         return characters.refresh_panel(
-            mode, slug, "Extract a voice first.", root)
+            slug, "Extract a voice first.", root)
 
     return characters.add_reference_to_character_ui(
-        mode, slug, reference_path,
+        slug, reference_path,
         label or os.path.basename(reference_path), root)
 
 

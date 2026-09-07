@@ -91,8 +91,12 @@ def dataset_state_dir(root: str, slug: str) -> str:
     return os.path.join(root, slug, "lora_training", "dataset", f"voiceforge_{slug}")
 
 
-def readiness_report(mode: str, slug: str, root: Optional[str] = None) -> str:
-    """Markdown block: is this voice worth pointing a GPU at, per lane."""
+def readiness_report(slug: str, root: Optional[str] = None) -> str:
+    """Markdown block: is this voice worth pointing a GPU at, per lane.
+
+    Always shows both LoRA and RVC status regardless of which lane is selected.
+    This is a oneshot voice's readiness summary, not a mode-specific one.
+    """
     if not slug:
         return "Select a voice first."
 
@@ -109,7 +113,7 @@ def readiness_report(mode: str, slug: str, root: Optional[str] = None) -> str:
     lines = []
     lines.append(f"{clip_count} clips, {total_seconds:.0f}s total.")
 
-    # Per-lane status — always show both lanes regardless of mode
+    # Per-lane status — always show both lanes
     import lora_engine
     if lora_engine.engine_supports_lora():
         lines.append("LoRA: available.")
@@ -465,9 +469,9 @@ def checkpoint_detail(slug: str, checkpoint_path: Optional[str],
     return " · ".join(parts)
 
 
-def on_checkpoint_change(mode: str, slug: str, checkpoint_path: Optional[str],
+def on_checkpoint_change(slug: str, checkpoint_path: Optional[str],
                          root: Optional[str] = None):
-    """Selection moved: (gr.update for the sample Audio, detail markdown)."""
+    """Checkpoint selection changed: return (gr.update for sample Audio, detail markdown)."""
     sample_path = sample_for_checkpoint(slug, checkpoint_path, root)
     detail = checkpoint_detail(slug, checkpoint_path, root)
 
@@ -479,9 +483,9 @@ def on_checkpoint_change(mode: str, slug: str, checkpoint_path: Optional[str],
         return gr.update(value=sample_path), detail
 
 
-def use_checkpoint_ui(mode: str, slug: str, checkpoint_path: Optional[str],
+def use_checkpoint_ui(slug: str, checkpoint_path: Optional[str],
                       root: Optional[str] = None) -> Tuple[str, str]:
-    """"Use this checkpoint" pressed. Returns (status line, readiness markdown)."""
+    """\"Use this checkpoint\" pressed. Returns (status line, readiness markdown)."""
     if not slug:
         return "Select a voice first.", ""
 
@@ -505,10 +509,10 @@ def use_checkpoint_ui(mode: str, slug: str, checkpoint_path: Optional[str],
     store.save_character(root, slug, doc)
 
     return (f"Using {os.path.basename(checkpoint_path)}. "
-            "Speak with trained voice (LoRA) must be re-toggled."), readiness_report(mode, slug, root)
+            "Speak with trained voice (LoRA) must be re-toggled."), readiness_report(slug, root)
 
 
-def stop_training_ui(mode: str, slug: str, root: Optional[str] = None) -> str:
+def stop_training_ui(slug: str, root: Optional[str] = None) -> str:
     """Ask the running LoRA stage to stop, gracefully."""
     if not slug:
         return "Select a voice first."
@@ -559,10 +563,14 @@ def _format_live_status(state_dir: str, fallback: str) -> str:
     return fallback
 
 
-def start_training_ui(mode: str, slug: str, lane: str, confirmed: bool,
+def start_training_ui(slug: str, lane: str, confirmed: bool,
                       rvc_epochs: Any, root: Optional[str] = None):
     """Train pressed. A generator; yields (progress_html, status_text,
-    checkpoint dropdown gr.update)."""
+    checkpoint dropdown gr.update).
+
+    The lane determines which training path to take (LoRA or RVC). Oneshot
+    voices can train either lane independently; this is not a voice mode choice.
+    """
     if root is None:
         root = characters.CHARACTER_LIBRARY_ROOT
 
@@ -681,9 +689,9 @@ def start_training_ui(mode: str, slug: str, lane: str, confirmed: bool,
             raise
 
 
-def refresh_training_panel(mode: str, slug: str, root: Optional[str] = None):
-    """Voice or mode changed / Refresh pressed."""
-    readiness = readiness_report(mode, slug, root)
+def refresh_training_panel(slug: str, root: Optional[str] = None):
+    """Voice changed or Refresh pressed: update readiness and checkpoint panel."""
+    readiness = readiness_report(slug, root)
     ckpt_choices_result = checkpoint_choices(slug, root)
     ckpt_update = gr.update(choices=ckpt_choices_result[0], value=ckpt_choices_result[1])
     sample_path = sample_for_checkpoint(slug, ckpt_choices_result[1], root)
@@ -692,53 +700,46 @@ def refresh_training_panel(mode: str, slug: str, root: Optional[str] = None):
     return readiness, ckpt_update, sample_update, detail
 
 
-def on_mode_change(mode: str, root: Optional[str] = None):
-    """Mode dropdown moved: repopulate the voice dropdown and the panel."""
-    if root is None:
-        root = characters.CHARACTER_LIBRARY_ROOT
-
-    voice_choices = characters.character_choices(mode, root)
-    first_slug = voice_choices[0][1] if voice_choices else characters.NO_SELECTION
-    voice_update = gr.update(choices=voice_choices, value=first_slug)
-
-    readiness, ckpt_update, sample_update, detail = refresh_training_panel(mode, first_slug, root)
-    return voice_update, readiness, ckpt_update, sample_update, detail
-
-
 def initial_state(root: Optional[str] = None):
-    """Layout-time defaults: (mode, voice_choices, first_slug, readiness_md,
-    ckpt_choices, ckpt_value, sample_path, detail_md)."""
+    """Layout-time defaults.
+
+    Returns a four-tuple from characters.initial_state() along with checkpoint
+    and sample details: (choices, first_slug, name, description, readiness,
+    ckpt_choices, ckpt_value, sample_path, detail).
+    """
     if root is None:
         root = characters.CHARACTER_LIBRARY_ROOT
 
-    mode_choices = characters.mode_choices()
-    first_mode = mode_choices[0][1] if mode_choices else "oneshot"
+    # Get character state from the character handler using its new signature
+    initial_result = characters.initial_state(root)
+    voice_choices, first_slug, name, description = initial_result
 
-    voice_choices = characters.character_choices(first_mode, root)
-    first_slug = voice_choices[0][1] if voice_choices else characters.NO_SELECTION
-
-    readiness = readiness_report(first_mode, first_slug, root)
+    readiness = readiness_report(first_slug, root)
     ckpt_result = checkpoint_choices(first_slug, root)
     ckpt_value = ckpt_result[1]
     sample_path = sample_for_checkpoint(first_slug, ckpt_value, root)
     detail = checkpoint_detail(first_slug, ckpt_value, root)
 
-    return (first_mode, voice_choices, first_slug, readiness,
+    return (voice_choices, first_slug, name, description, readiness,
             ckpt_result[0], ckpt_value, sample_path, detail)
 
 
 def build_training_tab(root: Optional[str] = None) -> Dict[str, Any]:
-    """Build the tab's components and wire its events."""
+    """Build the tab's components and wire its events.
+
+    All voices in the library are oneshot voices; the UI no longer exposes
+    a voice mode choice. The training lane (LoRA vs. RVC) is separate and
+    controlled by the lane radio.
+    """
     if root is None:
         root = characters.CHARACTER_LIBRARY_ROOT
 
-    mode_dd = gr.Dropdown(label="Voice type", choices=characters.mode_choices(), value=characters.mode_choices()[0][1] if characters.mode_choices() else "oneshot")
-    voice_choices = characters.character_choices(characters.mode_choices()[0][1] if characters.mode_choices() else "oneshot", root)
-    voice_dd = gr.Dropdown(label="Voice", choices=voice_choices, value=voice_choices[0][1] if voice_choices else characters.NO_SELECTION)
+    # Get initial state from character handler's new signature
+    voice_choices, first_slug, name, description = characters.initial_state(root)
+    voice_dd = gr.Dropdown(label="Voice", choices=voice_choices, value=first_slug)
     refresh_btn = gr.Button("Refresh", variant="secondary")
 
-    readiness_md = gr.Markdown(readiness_report(characters.mode_choices()[0][1] if characters.mode_choices() else "oneshot",
-                                                  voice_choices[0][1] if voice_choices else characters.NO_SELECTION, root))
+    readiness_md = gr.Markdown(readiness_report(first_slug, root))
 
     lane_radio = gr.Radio(lane_choices(), value=LANE_LORA, label="Training lane")
     rvc_epochs_num = gr.Number(label="RVC epochs", value=200, precision=0, visible=False)
@@ -770,14 +771,13 @@ def build_training_tab(root: Optional[str] = None) -> Dict[str, Any]:
         )
 
     # Wire events
-    mode_dd.change(on_mode_change, [mode_dd], [voice_dd, readiness_md, ckpt_dd, sample_audio, detail_md], queue=False)
-    voice_dd.change(refresh_training_panel, [mode_dd, voice_dd], [readiness_md, ckpt_dd, sample_audio, detail_md], queue=False)
-    refresh_btn.click(refresh_training_panel, [mode_dd, voice_dd], [readiness_md, ckpt_dd, sample_audio, detail_md], queue=False)
+    voice_dd.change(refresh_training_panel, [voice_dd], [readiness_md, ckpt_dd, sample_audio, detail_md], queue=False)
+    refresh_btn.click(refresh_training_panel, [voice_dd], [readiness_md, ckpt_dd, sample_audio, detail_md], queue=False)
     lane_radio.change(on_lane_change, [lane_radio], [stop_btn, rvc_epochs_num], queue=False)
-    train_btn.click(start_training_ui, [mode_dd, voice_dd, lane_radio, confirm_cb, rvc_epochs_num], [progress_html, status_tb, ckpt_dd], queue=True)
-    stop_btn.click(stop_training_ui, [mode_dd, voice_dd], [status_tb], queue=False)
-    ckpt_dd.change(on_checkpoint_change, [mode_dd, voice_dd, ckpt_dd], [sample_audio, detail_md], queue=False)
-    use_btn.click(use_checkpoint_ui, [mode_dd, voice_dd, ckpt_dd], [status_tb, readiness_md], queue=False)
+    train_btn.click(start_training_ui, [voice_dd, lane_radio, confirm_cb, rvc_epochs_num], [progress_html, status_tb, ckpt_dd], queue=True)
+    stop_btn.click(stop_training_ui, [voice_dd], [status_tb], queue=False)
+    ckpt_dd.change(on_checkpoint_change, [voice_dd, ckpt_dd], [sample_audio, detail_md], queue=False)
+    use_btn.click(use_checkpoint_ui, [voice_dd, ckpt_dd], [status_tb, readiness_md], queue=False)
 
     for _lora_event in (speak_cb.change, strength_sl.release, voice_dd.change):
         _lora_event(
@@ -789,7 +789,6 @@ def build_training_tab(root: Optional[str] = None) -> Dict[str, Any]:
         )
 
     return {
-        "mode": mode_dd,
         "voice": voice_dd,
         "refresh": refresh_btn,
         "readiness": readiness_md,

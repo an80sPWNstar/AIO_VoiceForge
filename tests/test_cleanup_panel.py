@@ -25,12 +25,10 @@ class CleanupPanelBuildTests(unittest.TestCase):
             )
 
             # Character targets
-            character_mode = gr.Dropdown(choices=["oneshot"], value="oneshot")
             character_select = gr.Dropdown(choices=["test"], value="test")
             character_name = gr.Textbox(value="TestVoice", label="Character name")
             character_summary = gr.Markdown("Test summary")
             char_targets = CharacterTargets(
-                mode=character_mode,
                 select=character_select,
                 name=character_name,
                 summary=character_summary,
@@ -74,7 +72,6 @@ class CleanupPanelBuildTests(unittest.TestCase):
                 status=gr.Textbox(),
             )
             char_targets = CharacterTargets(
-                mode=gr.Dropdown(),
                 select=gr.Dropdown(),
                 name=gr.Textbox(),
                 summary=gr.Markdown(),
@@ -115,7 +112,6 @@ class CleanupPanelBuildTests(unittest.TestCase):
                 status=gr.Textbox(),
             )
             char_targets = CharacterTargets(
-                mode=gr.Dropdown(),
                 select=gr.Dropdown(),
                 name=gr.Textbox(),
                 summary=gr.Markdown(),
@@ -154,7 +150,6 @@ class CleanupPanelBuildTests(unittest.TestCase):
                 status=gr.Textbox(),
             )
             char_targets = CharacterTargets(
-                mode=gr.Dropdown(),
                 select=gr.Dropdown(),
                 name=gr.Textbox(),
                 summary=gr.Markdown(),
@@ -190,7 +185,6 @@ class CleanupPanelBuildTests(unittest.TestCase):
                 status=gr.Textbox(),
             )
             char_targets = CharacterTargets(
-                mode=gr.Dropdown(),
                 select=gr.Dropdown(),
                 name=gr.Textbox(),
                 summary=gr.Markdown(),
@@ -204,7 +198,7 @@ class CleanupPanelBuildTests(unittest.TestCase):
             result = webui_cleanup_panel.build_cleanup_panel(ctx, upstream_path)
 
         # Get the expected caption from initial_state
-        _char_mode0, _char_choices0, _char_first0, _char_name0, _char_desc0 = (
+        _char_choices0, _char_first0, _char_name0, _char_desc0 = (
             webui_character_handlers.initial_state()
         )
         expected_caption = webui_segmentation_handlers.describe_save_target(_char_name0)
@@ -227,7 +221,6 @@ class CleanupPanelBuildTests(unittest.TestCase):
                 status=gr.Textbox(),
             )
             char_targets = CharacterTargets(
-                mode=gr.Dropdown(),
                 select=gr.Dropdown(),
                 name=gr.Textbox(),
                 summary=gr.Markdown(),
@@ -253,7 +246,6 @@ class CleanupPanelBuildTests(unittest.TestCase):
                 status=gr.Textbox(),
             )
             char_targets = CharacterTargets(
-                mode=gr.Dropdown(),
                 select=gr.Dropdown(),
                 name=gr.Textbox(),
                 summary=gr.Markdown(),
@@ -288,7 +280,6 @@ class CleanupPanelBuildTests(unittest.TestCase):
                 status=gr.Textbox(),
             )
             char_targets = CharacterTargets(
-                mode=gr.Dropdown(),
                 select=gr.Dropdown(),
                 name=gr.Textbox(),
                 summary=gr.Markdown(),

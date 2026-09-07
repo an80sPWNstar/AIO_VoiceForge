@@ -112,47 +112,46 @@ class ReadinessTests(_TempLibrary):
 
     def test_no_slug_asks_for_a_selection(self):
         self._patch_engines()
-        res = training.readiness_report("lora", None, self.root)
+        res = training.readiness_report(None, self.root)
         self.assertIn("Select a voice", res)
 
     def test_unknown_slug_asks_for_a_selection(self):
         self._patch_engines()
-        res = training.readiness_report("lora", "nonexistent", self.root)
+        res = training.readiness_report("nonexistent", self.root)
         self.assertIn("Select a voice", res)
 
     def test_reports_clip_count_and_seconds(self):
         self._patch_engines()
         self._add_clip(300.0)
         self._add_clip(200.0)
-        res = training.readiness_report("lora", self.slug, self.root)
+        res = training.readiness_report(self.slug, self.root)
         self.assertIn("2", res)
         self.assertIn("500", res)
 
     def test_missing_lora_engine_is_named(self):
         with mock.patch("lora_engine.engine_supports_lora", return_value=False):
             with mock.patch("rvc_paths.missing_applio_parts", return_value=[]):
-                res = training.readiness_report("lora", self.slug, self.root)
+                res = training.readiness_report(self.slug, self.root)
                 self.assertIn("LoRA training pipeline", res)
 
     def test_missing_applio_parts_are_named(self):
         with mock.patch("lora_engine.engine_supports_lora", return_value=True):
             with mock.patch("rvc_paths.missing_applio_parts", return_value=["python.exe"]):
-                res = training.readiness_report("rvc", self.slug, self.root)
+                res = training.readiness_report(self.slug, self.root)
                 self.assertIn("python.exe", res)
 
     def test_oneshot_mode_reports_both_lanes(self):
-        # The tab's mode dropdown carries character modes ("oneshot"/"rvc"),
-        # never lane names; a oneshot voice must still see both lanes' status.
+        # All voices are oneshot voices; readiness must show both lanes' status.
         self._patch_engines()
         self._add_clip(300.0)
-        res = training.readiness_report("oneshot", self.slug, self.root)
+        res = training.readiness_report(self.slug, self.root)
         self.assertIn("LoRA", res)
         self.assertIn("RVC", res)
 
     def test_thin_dataset_gets_a_warning(self):
         self._patch_engines()
         self._add_clip(30.0)
-        res = training.readiness_report("lora", self.slug, self.root)
+        res = training.readiness_report(self.slug, self.root)
         self.assertIn("thin", res)
 
     def test_already_trained_lane_is_reported(self):
@@ -160,13 +159,13 @@ class ReadinessTests(_TempLibrary):
         adapter = self._touch_checkpoint(f"voiceforge_{self.slug}.safetensors")
         self.doc["lora"]["adapter_path"] = adapter
         store.save_character(self.root, self.slug, self.doc)
-        res = training.readiness_report("lora", self.slug, self.root)
+        res = training.readiness_report(self.slug, self.root)
         self.assertIn("already trained", res)
 
     def test_unmeasured_clips_are_counted(self):
         self._patch_engines()
         self._add_clip(None)
-        res = training.readiness_report("lora", self.slug, self.root)
+        res = training.readiness_report(self.slug, self.root)
         self.assertIn("no measured duration", res)
 
 
@@ -318,24 +317,24 @@ class CheckpointDetailTests(_TempLibrary):
         ad = self._adapter_dir()
         cp = self._touch_checkpoint(f"voiceforge_{self.slug}_epoch_003.safetensors")
         # No sample created
-        
-        audio_update, detail = training.on_checkpoint_change("lora", self.slug, cp, self.root)
+
+        audio_update, detail = training.on_checkpoint_change(self.slug, cp, self.root)
         self.assertIsNone(audio_update["value"])
         self.assertIn("no kept sample", detail)
 
 
 class UseCheckpointTests(_TempLibrary):
     def test_refuses_without_slug(self):
-        status, _ = training.use_checkpoint_ui("lora", None, "/fake/path", self.root)
+        status, _ = training.use_checkpoint_ui(None, "/fake/path", self.root)
         self.assertIn("Select a voice", status)
         self.assertIsNone(store.load_character(self.root, self.slug)["lora"]["adapter_path"])
 
     def test_refuses_without_selection(self):
-        status, _ = training.use_checkpoint_ui("lora", self.slug, None, self.root)
+        status, _ = training.use_checkpoint_ui(self.slug, None, self.root)
         self.assertIn("Select a checkpoint", status)
 
     def test_refuses_a_missing_file(self):
-        status, _ = training.use_checkpoint_ui("lora", self.slug, "/nonexistent/path.safetensors", self.root)
+        status, _ = training.use_checkpoint_ui(self.slug, "/nonexistent/path.safetensors", self.root)
         self.assertIn("does not exist", status)
 
     def test_writes_adapter_path_and_preserves_strength(self):
@@ -343,10 +342,10 @@ class UseCheckpointTests(_TempLibrary):
         cp = self._touch_checkpoint(f"voiceforge_{self.slug}.safetensors")
         self.doc["lora"]["strength"] = 1.5
         store.save_character(self.root, self.slug, self.doc)
-        
-        status, _ = training.use_checkpoint_ui("lora", self.slug, cp, self.root)
+
+        status, _ = training.use_checkpoint_ui(self.slug, cp, self.root)
         self.assertIn("Speak with trained voice", status)
-        
+
         new_doc = store.load_character(self.root, self.slug)
         self.assertEqual(new_doc["lora"]["adapter_path"], cp)
         self.assertEqual(new_doc["lora"]["strength"], 1.5)
@@ -358,7 +357,7 @@ class UseCheckpointTests(_TempLibrary):
         self.doc["lora"]["samples_dir"] = "somewhere"
         store.save_character(self.root, self.slug, self.doc)
 
-        training.use_checkpoint_ui("oneshot", self.slug, cp, self.root)
+        training.use_checkpoint_ui(self.slug, cp, self.root)
 
         new_doc = store.load_character(self.root, self.slug)
         self.assertEqual(new_doc["lora"]["trained_from_seconds"], 123.0)
@@ -367,13 +366,13 @@ class UseCheckpointTests(_TempLibrary):
     def test_success_mentions_retoggling_speak(self):
         ad = self._adapter_dir()
         cp = self._touch_checkpoint(f"voiceforge_{self.slug}.safetensors")
-        status, _ = training.use_checkpoint_ui("lora", self.slug, cp, self.root)
+        status, _ = training.use_checkpoint_ui(self.slug, cp, self.root)
         self.assertIn("Speak with trained voice", status)
 
 
 class StopTests(_TempLibrary):
     def test_no_slug_is_a_message(self):
-        res = training.stop_training_ui("lora", None, self.root)
+        res = training.stop_training_ui(None, self.root)
         self.assertIn("Select a voice", res)
 
     def test_touches_stop_flags_in_both_state_dirs(self):
@@ -381,8 +380,8 @@ class StopTests(_TempLibrary):
         ds = training.dataset_state_dir(self.root, self.slug)
         pathlib.Path(ad).mkdir(parents=True, exist_ok=True)
         pathlib.Path(ds).mkdir(parents=True, exist_ok=True)
-        
-        res = training.stop_training_ui("lora", self.slug, self.root)
+
+        res = training.stop_training_ui(self.slug, self.root)
         self.assertTrue(os.path.exists(os.path.join(ad, "stop.flag")))
         self.assertTrue(os.path.exists(os.path.join(ds, "stop.flag")))
 
@@ -415,20 +414,20 @@ class LiveStatusTests(_TempLibrary):
 
 class StartTrainingGateTests(_TempLibrary):
     def test_no_slug_is_refused(self):
-        gen = training.start_training_ui("lora", None, training.LANE_LORA, True, 200, self.root)
+        gen = training.start_training_ui(None, training.LANE_LORA, True, 200, self.root)
         yields = list(gen)
         self.assertEqual(len(yields), 1)
         self.assertIn("Select a voice", yields[0][1])
 
     def test_unconfirmed_press_arms(self):
-        gen = training.start_training_ui("lora", self.slug, training.LANE_LORA, False, 200, self.root)
+        gen = training.start_training_ui(self.slug, training.LANE_LORA, False, 200, self.root)
         yields = list(gen)
         self.assertEqual(len(yields), 1)
         self.assertIn("Confirm", yields[0][1])
 
     def test_missing_lora_engine_is_refused(self):
         with mock.patch("lora_engine.engine_supports_lora", return_value=False):
-            gen = training.start_training_ui("lora", self.slug, training.LANE_LORA, True, 200, self.root)
+            gen = training.start_training_ui(self.slug, training.LANE_LORA, True, 200, self.root)
             yields = list(gen)
             self.assertEqual(len(yields), 1)
             self.assertIn("LoRA", yields[0][1])
@@ -437,7 +436,7 @@ class StartTrainingGateTests(_TempLibrary):
 
     def test_missing_applio_is_refused(self):
         with mock.patch("rvc_paths.missing_applio_parts", return_value=["python.exe"]):
-            gen = training.start_training_ui("rvc", self.slug, training.LANE_RVC, True, 200, self.root)
+            gen = training.start_training_ui(self.slug, training.LANE_RVC, True, 200, self.root)
             yields = list(gen)
             self.assertEqual(len(yields), 1)
             self.assertIn("python.exe", yields[0][1])
@@ -449,7 +448,7 @@ class StartTrainingLoraTests(_TempLibrary):
         adapter_path = os.path.join(ad, f"voiceforge_{self.slug}.safetensors")
         status_path = os.path.join(ad, "status.json")
         samples_dir = os.path.join(ad, "samples")
-        
+
         def fake_train(*args, **kwargs):
             cb = kwargs.get('progress_callback')
             if cb:
@@ -465,9 +464,9 @@ class StartTrainingLoraTests(_TempLibrary):
             }
 
         with mock.patch("character_training.train_character_lora", fake_train):
-            gen = training.start_training_ui("lora", self.slug, training.LANE_LORA, True, 200, self.root)
+            gen = training.start_training_ui(self.slug, training.LANE_LORA, True, 200, self.root)
             yields = list(gen)
-            
+
             # At least one intermediate yield must carry real progress: a bar
             # that is no longer the idle one.
             self.assertGreater(len(yields), 1)
@@ -494,7 +493,7 @@ class StartTrainingLoraTests(_TempLibrary):
             with mock.patch("character_training.train_character_lora", fake_train):
                 with mock.patch("lora_engine.engine_supports_lora", return_value=True):
                     gen = training.start_training_ui(
-                        "oneshot", self.slug, training.LANE_LORA, True, 200)
+                        self.slug, training.LANE_LORA, True, 200)
                     list(gen)
         self.assertEqual(seen.get("root"), self.root)
 
@@ -515,7 +514,7 @@ class StartTrainingLoraTests(_TempLibrary):
 
         with mock.patch("character_training.train_character_lora", fake_train):
             gen = training.start_training_ui(
-                "oneshot", self.slug, training.LANE_LORA, True, 200, self.root)
+                self.slug, training.LANE_LORA, True, 200, self.root)
             yields = list(gen)
         self.assertTrue(any("3/10" in (y[1] or "") for y in yields[:-1]))
 
@@ -532,7 +531,7 @@ class StartTrainingLoraTests(_TempLibrary):
 
         with mock.patch("character_training.train_character_lora", fake_train):
             gen = training.start_training_ui(
-                "oneshot", self.slug, training.LANE_LORA, True, 200, self.root)
+                self.slug, training.LANE_LORA, True, 200, self.root)
             yields = list(gen)
         progress_frames = [y[0] for y in yields[:-1]]
         self.assertGreaterEqual(len(progress_frames), 2)
@@ -542,18 +541,18 @@ class StartTrainingLoraTests(_TempLibrary):
     def test_lora_error_reaches_the_status_line(self):
         def fake_train(*args, **kwargs):
             raise lora_engine.LoraError("boom")
-        
+
         with mock.patch("character_training.train_character_lora", fake_train):
-            gen = training.start_training_ui("lora", self.slug, training.LANE_LORA, True, 200, self.root)
+            gen = training.start_training_ui(self.slug, training.LANE_LORA, True, 200, self.root)
             yields = list(gen)
             self.assertIn("boom", yields[-1][1])
 
     def test_dataset_error_reaches_the_status_line(self):
         def fake_train(*args, **kwargs):
             raise character_dataset.DatasetExportError("data fail")
-        
+
         with mock.patch("character_training.train_character_lora", fake_train):
-            gen = training.start_training_ui("lora", self.slug, training.LANE_LORA, True, 200, self.root)
+            gen = training.start_training_ui(self.slug, training.LANE_LORA, True, 200, self.root)
             yields = list(gen)
             self.assertIn("data fail", yields[-1][1])
 
@@ -563,7 +562,7 @@ class StartTrainingRvcTests(_TempLibrary):
         with mock.patch("character_training.train_character") as fake:
             fake.return_value = {"manifest": {}, "artifacts": {}}
             with mock.patch("rvc_paths.missing_applio_parts", return_value=[]):
-                gen = training.start_training_ui("rvc", self.slug, training.LANE_RVC, True, 150.0, self.root)
+                gen = training.start_training_ui(self.slug, training.LANE_RVC, True, 150.0, self.root)
                 list(gen)
                 fake.assert_called_once()
                 call_kwargs = fake.call_args[1]
@@ -576,7 +575,7 @@ class StartTrainingRvcTests(_TempLibrary):
             fake.return_value = {"manifest": {}, "artifacts": {}}
             with mock.patch("rvc_paths.missing_applio_parts", return_value=[]):
                 gen = training.start_training_ui(
-                    "rvc", self.slug, training.LANE_RVC, True, 200, self.root)
+                    self.slug, training.LANE_RVC, True, 200, self.root)
                 yields = list(gen)
         self.assertGreaterEqual(len(yields), 2)
         self.assertNotEqual(yields[0][1], "")
@@ -584,10 +583,10 @@ class StartTrainingRvcTests(_TempLibrary):
     def test_rvc_failure_reaches_the_status_line(self):
         def fake_train(*args, **kwargs):
             raise rvc_engine.RVCError("applio broke")
-        
+
         with mock.patch("character_training.train_character", fake_train):
             with mock.patch("rvc_paths.missing_applio_parts", return_value=[]):
-                gen = training.start_training_ui("rvc", self.slug, training.LANE_RVC, True, 200, self.root)
+                gen = training.start_training_ui(self.slug, training.LANE_RVC, True, 200, self.root)
                 yields = list(gen)
                 self.assertIn("applio broke", yields[-1][1])
 
@@ -596,33 +595,13 @@ class PanelRefreshTests(_TempLibrary):
     def test_refresh_returns_the_four_updates(self):
         with mock.patch("lora_engine.engine_supports_lora", return_value=True):
             with mock.patch("rvc_paths.missing_applio_parts", return_value=[]):
-                res = training.refresh_training_panel("lora", self.slug, self.root)
+                res = training.refresh_training_panel(self.slug, self.root)
                 self.assertEqual(len(res), 4)
                 # readiness, ckpt update, sample update, detail
                 self.assertIsInstance(res[0], str)
                 self.assertIn("choices", res[1])
                 self.assertIn("value", res[2])
                 self.assertIsInstance(res[3], str)
-
-    def test_mode_change_repopulates_voices(self):
-        with mock.patch("lora_engine.engine_supports_lora", return_value=True):
-            with mock.patch("rvc_paths.missing_applio_parts", return_value=[]):
-                res = training.on_mode_change("oneshot", self.root)
-                self.assertEqual(len(res), 5)
-                # voice update, readiness, ckpt update, sample update, detail
-                self.assertIn("choices", res[0])
-                self.assertIn(self.slug, [c[1] for c in res[0]["choices"]])
-
-    def test_mode_with_no_voices_does_not_crash(self):
-        # The library holds only a oneshot character; switching the tab to
-        # rvc must land on "nothing selected", not a traceback.
-        with mock.patch("lora_engine.engine_supports_lora", return_value=True):
-            with mock.patch("rvc_paths.missing_applio_parts", return_value=[]):
-                res = training.on_mode_change("rvc", self.root)
-                self.assertEqual(len(res), 5)
-                self.assertEqual(res[0]["choices"], [])
-                self.assertIsNone(res[0]["value"])
-                self.assertIsInstance(res[1], str)
 
 
 class BuildTests(_TempLibrary):
@@ -641,9 +620,9 @@ class BuildTests(_TempLibrary):
 
     def test_initial_state_shape(self):
         res = training.initial_state(root=self.root)
-        self.assertEqual(len(res), 8)
-        self.assertIsInstance(res[0], str)
-        self.assertIsInstance(res[1], list)
+        self.assertEqual(len(res), 9)
+        self.assertIsInstance(res[0], list)  # voice_choices
+        self.assertIsInstance(res[1], str)   # first_slug
 
 
 if __name__ == "__main__":

@@ -29,12 +29,10 @@ class TestSegmentationPanel(unittest.TestCase):
                 status=reference_status,
             )
 
-            character_mode = gr.Dropdown()
             character_select = gr.Dropdown()
             character_name = gr.Textbox()
             character_summary = gr.Markdown()
             character = CharacterTargets(
-                mode=character_mode,
                 select=character_select,
                 name=character_name,
                 summary=character_summary,
@@ -78,7 +76,6 @@ class TestSegmentationPanel(unittest.TestCase):
                 status=gr.Textbox(),
             )
             character = CharacterTargets(
-                mode=gr.Dropdown(),
                 select=gr.Dropdown(),
                 name=gr.Textbox(),
                 summary=gr.Markdown(),
@@ -109,7 +106,6 @@ class TestSegmentationPanel(unittest.TestCase):
                 status=gr.Textbox(),
             )
             character = CharacterTargets(
-                mode=gr.Dropdown(),
                 select=gr.Dropdown(),
                 name=gr.Textbox(),
                 summary=gr.Markdown(),
@@ -150,7 +146,6 @@ class TestSegmentationPanel(unittest.TestCase):
                 status=gr.Textbox(),
             )
             character = CharacterTargets(
-                mode=gr.Dropdown(),
                 select=gr.Dropdown(),
                 name=gr.Textbox(),
                 summary=gr.Markdown(),
@@ -189,7 +184,6 @@ class TestSegmentationPanel(unittest.TestCase):
                 status=gr.Textbox(),
             )
             character = CharacterTargets(
-                mode=gr.Dropdown(),
                 select=gr.Dropdown(),
                 name=gr.Textbox(),
                 summary=gr.Markdown(),
@@ -225,7 +219,6 @@ class TestSegmentationPanel(unittest.TestCase):
                 status=gr.Textbox(),
             )
             character = CharacterTargets(
-                mode=gr.Dropdown(),
                 select=gr.Dropdown(),
                 name=gr.Textbox(),
                 summary=gr.Markdown(),
@@ -239,7 +232,7 @@ class TestSegmentationPanel(unittest.TestCase):
             result = panel.build_segmentation_panel(ctx, upstream_path)
 
         # Get the expected caption from initial_state
-        _char_mode0, _char_choices0, _char_first0, _char_name0, _char_desc0 = (
+        _char_choices0, _char_first0, _char_name0, _char_desc0 = (
             webui_character_handlers.initial_state()
         )
         expected_caption = webui_segmentation_handlers.describe_save_target(_char_name0)

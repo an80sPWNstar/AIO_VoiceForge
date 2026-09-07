@@ -52,7 +52,6 @@ class CharacterTargets:
     those panels follow whichever voice the library currently has selected.
     """
 
-    mode: Any
     select: Any
     name: Any
     summary: Any

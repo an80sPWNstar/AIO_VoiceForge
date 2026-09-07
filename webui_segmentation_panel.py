@@ -32,7 +32,7 @@ def build_segmentation_panel(ctx: PanelContext, upstream_path: Any) -> Dict[str,
     """
 
     # Get the initial character name for the save-target caption.
-    _char_mode0, _char_choices0, _char_first0, _char_name0, _char_desc0 = (
+    _char_choices0, _char_first0, _char_name0, _char_desc0 = (
         character_handlers.initial_state()
     )
 
@@ -202,7 +202,7 @@ def build_segmentation_panel(ctx: PanelContext, upstream_path: Any) -> Dict[str,
 
     sg_save_btn.click(
         segmentation_handlers.save_segment_to_voice_ui,
-        inputs=[ctx.character.mode, ctx.character.select, sg_state, sg_select,
+        inputs=[ctx.character.select, sg_state, sg_select,
                 sg_save_name],
         # The first three land on the Character Library panel, which is on
         # the other tab and has to reflect the new clip. The fourth is the

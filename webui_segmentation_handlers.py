@@ -595,7 +595,6 @@ def segment_metrics(segment: segmentation.Segment) -> Dict[str, Any]:
 
 
 def save_segment_to_voice_ui(
-    mode: str,
     slug: str,
     state: Optional[Dict[str, Any]],
     index: Any,
@@ -611,23 +610,18 @@ def save_segment_to_voice_ui(
     segment = segment_from_state(state, index)
     if segment is None:
         return characters.refresh_panel(
-            mode, slug, "Scan a recording and pick a segment first.", root)
-    # Checked before the export, not after: cutting a wav to disk and then
-    # refusing to file it leaves a working file nothing points at.
-    if mode == store.MODE_RVC:
-        return characters.refresh_panel(
-            mode, slug, "An RVC voice holds a model, not clips.", root)
+            slug, "Scan a recording and pick a segment first.", root)
     if not slug:
-        return characters.refresh_panel(mode, slug, "Select a voice first.", root)
+        return characters.refresh_panel(slug, "Select a voice first.", root)
 
     source = (state or {}).get("source") or ""
     try:
         path = export_segment(source, segment, export_root)
     except Exception as exc:            # noqa: BLE001 - surfaced, never swallowed
         return characters.refresh_panel(
-            mode, slug, f"Could not cut that segment out: {exc}", root)
+            slug, f"Could not cut that segment out: {exc}", root)
 
     spoken = label or f"{os.path.basename(source)} #{segment.index + 1}"
     return characters.add_reference_to_character_ui(
-        mode, slug, path, spoken, root, metrics=segment_metrics(segment)
+        slug, path, spoken, root, metrics=segment_metrics(segment)
     )

@@ -4,9 +4,11 @@ Stage 2 of the ingestion pipeline. Reads the previous stage's output path
 (media-fetch result) from upstream_path, with manual upload winning over it
 when both are present.
 
-The panel offers preset cleanup modes (surgical, balanced, aggressive) and
-exposes the underlying stages so users can fine-tune. Manual voice selection
-lets users pick which voice to extract when multiple speakers are detected.
+The presets are named for what they do to the audio -- just remove the music,
+a standard clean-up, an aggressive studio clean, or custom -- and each one
+simply fills in the stage checkboxes, which are what actually runs. Manual
+voice selection stops after analysis and lists every voice it heard, so the
+one to extract can be picked by ear.
 Once extraction is done, a best reference clip can be saved to the Voice
 Library for use in generation.
 """
@@ -33,7 +35,7 @@ def build_cleanup_panel(ctx: PanelContext, upstream_path: Any) -> Dict[str, Any]
     # The save-target caption names the voice a saved clip would land on, and
     # it has to say so from the first render -- the character events below only
     # refresh it once the library is touched. Same seed the library panel uses.
-    _char_mode0, _char_choices0, _char_first0, _char_name0, _char_desc0 = (
+    _char_choices0, _char_first0, _char_name0, _char_desc0 = (
         character_handlers.initial_state()
     )
 
@@ -335,7 +337,6 @@ def build_cleanup_panel(ctx: PanelContext, upstream_path: Any) -> Dict[str, Any]
     cl_voice_save_btn.click(
         webui_handlers.save_voice_reference_ui,
         inputs=[
-            ctx.character.mode,
             ctx.character.select,
             cl_reference_path,
             cl_voice_save_name,

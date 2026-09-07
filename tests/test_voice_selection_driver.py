@@ -208,38 +208,39 @@ class TestVoiceIdFromChoice(unittest.TestCase):
 class TestSaveVoiceReferenceUi(unittest.TestCase):
     """Test save_voice_reference_ui guards and delegation."""
 
-    @patch("webui_handlers.characters.refresh_panel")
-    def test_rvc_mode_guard(self, mock_refresh):
-        """Should refuse RVC mode."""
-        mock_refresh.return_value = ("a", "b", "c", "d")
-        webui_handlers.save_voice_reference_ui(
-            store.MODE_RVC, "slug", "/path.wav", "label"
-        )
-        mock_refresh.assert_called_once()
-        call_args = mock_refresh.call_args[0]
-        self.assertIn("RVC voice holds a model", call_args[2])
+    @patch("webui_handlers.characters.add_reference_to_character_ui")
+    def test_rvc_voice_accepts_clips(self, mock_add_ref):
+        """RVC voices now accept clips."""
+        mock_add_ref.return_value = ("a", "b", "c", "d")
+        with tempfile.NamedTemporaryFile(suffix=".wav") as f:
+            result = webui_handlers.save_voice_reference_ui(
+                "rvc_slug", f.name, "label"
+            )
+            mock_add_ref.assert_called_once()
+            # Verify the clip was saved (add_reference was called)
+            self.assertIsNotNone(result)
 
     @patch("webui_handlers.characters.refresh_panel")
     def test_empty_slug_guard(self, mock_refresh):
         """Should refuse empty slug."""
         mock_refresh.return_value = ("a", "b", "c", "d")
         webui_handlers.save_voice_reference_ui(
-            store.MODE_ONESHOT, "", "/path.wav", "label"
+            "", "/path.wav", "label"
         )
         mock_refresh.assert_called_once()
         call_args = mock_refresh.call_args[0]
-        self.assertIn("Select a voice", call_args[2])
+        self.assertIn("Select a voice", call_args[1])
 
     @patch("webui_handlers.characters.refresh_panel")
     def test_missing_path_guard(self, mock_refresh):
         """Should refuse missing or nonexistent reference_path."""
         mock_refresh.return_value = ("a", "b", "c", "d")
         webui_handlers.save_voice_reference_ui(
-            store.MODE_ONESHOT, "slug", "/nonexistent.wav", "label"
+            "slug", "/nonexistent.wav", "label"
         )
         mock_refresh.assert_called_once()
         call_args = mock_refresh.call_args[0]
-        self.assertIn("Extract a voice", call_args[2])
+        self.assertIn("Extract a voice", call_args[1])
 
     @patch("webui_handlers.characters.add_reference_to_character_ui")
     def test_calls_add_reference(self, mock_add_ref):
@@ -247,14 +248,13 @@ class TestSaveVoiceReferenceUi(unittest.TestCase):
         mock_add_ref.return_value = ("a", "b", "c", "d")
         with tempfile.NamedTemporaryFile(suffix=".wav") as f:
             result = webui_handlers.save_voice_reference_ui(
-                store.MODE_ONESHOT, "slug", f.name, "label"
+                "slug", f.name, "label"
             )
             mock_add_ref.assert_called_once()
             call_args = mock_add_ref.call_args[0]
-            self.assertEqual(call_args[0], store.MODE_ONESHOT)
-            self.assertEqual(call_args[1], "slug")
-            self.assertEqual(call_args[2], f.name)
-            self.assertEqual(call_args[3], "label")
+            self.assertEqual(call_args[0], "slug")
+            self.assertEqual(call_args[1], f.name)
+            self.assertEqual(call_args[2], "label")
 
 
 class TestCleanupRunUiAuto(unittest.TestCase):

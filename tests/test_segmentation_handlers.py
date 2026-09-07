@@ -666,7 +666,7 @@ class SaveToVoiceTests(_Scratch):
         state = self.a_state([a_segment(start=1.0, duration=3.0, lufs=-18.5,
                                         pitch_hz_mean=142.0)], source)
         handlers.save_segment_to_voice_ui(
-            store.MODE_ONESHOT, slug, state, 0, "", self.library, self.exports)
+            slug, state, 0, "", self.library, self.exports)
 
         clip, = store.load_character(self.library, slug)["oneshot"]["clips"]
         self.assertAlmostEqual(clip["lufs"], -18.5)
@@ -679,7 +679,7 @@ class SaveToVoiceTests(_Scratch):
         slug = self.a_voice()
         state = self.a_state([a_segment(index=4)], self.a_recording_path())
         handlers.save_segment_to_voice_ui(
-            store.MODE_ONESHOT, slug, state, 4, "", self.library, self.exports)
+            slug, state, 4, "", self.library, self.exports)
         clip, = store.load_character(self.library, slug)["oneshot"]["clips"]
         self.assertNotIn("index", clip)
 
@@ -688,7 +688,7 @@ class SaveToVoiceTests(_Scratch):
         source = self.a_recording_path("interview.wav")
         state = self.a_state([a_segment(index=2)], source)
         handlers.save_segment_to_voice_ui(
-            store.MODE_ONESHOT, slug, state, 2, "", self.library, self.exports)
+            slug, state, 2, "", self.library, self.exports)
         clip, = store.load_character(self.library, slug)["oneshot"]["clips"]
         self.assertIn("interview.wav", clip["label"])
         self.assertIn("#3", clip["label"])
@@ -697,7 +697,7 @@ class SaveToVoiceTests(_Scratch):
         slug = self.a_voice()
         state = self.a_state([a_segment()], self.a_recording_path())
         handlers.save_segment_to_voice_ui(
-            store.MODE_ONESHOT, slug, state, 0, "angry take", self.library,
+            slug, state, 0, "angry take", self.library,
             self.exports)
         clip, = store.load_character(self.library, slug)["oneshot"]["clips"]
         self.assertEqual(clip["label"], "angry take")
@@ -706,7 +706,7 @@ class SaveToVoiceTests(_Scratch):
         slug = self.a_voice()
         state = self.a_state([a_segment()], self.a_recording_path())
         result = handlers.save_segment_to_voice_ui(
-            store.MODE_ONESHOT, slug, state, 0, "", self.library, self.exports)
+            slug, state, 0, "", self.library, self.exports)
         self.assertEqual(len(result), 4)
         select, name, summary, status = result
         self.assertEqual(name["value"], "Narrator")
@@ -716,7 +716,7 @@ class SaveToVoiceTests(_Scratch):
     def test_saving_with_nothing_picked_says_so_and_files_nothing(self):
         slug = self.a_voice()
         result = handlers.save_segment_to_voice_ui(
-            store.MODE_ONESHOT, slug, None, 0, "", self.library, self.exports)
+            slug, None, 0, "", self.library, self.exports)
         self.assertIn("Scan a recording", result[3]["value"])
         self.assertEqual(store.load_character(self.library, slug)["oneshot"]["clips"], [])
 
@@ -725,20 +725,27 @@ class SaveToVoiceTests(_Scratch):
         state = handlers.scan_state(os.path.join(self.scratch, "gone.wav"),
                                     FIXTURE_RATE, [a_segment()])
         result = handlers.save_segment_to_voice_ui(
-            store.MODE_ONESHOT, slug, state, 0, "", self.library, self.exports)
+            slug, state, 0, "", self.library, self.exports)
         self.assertIn("Could not cut", result[3]["value"])
 
-    def test_an_rvc_voice_is_refused_rather_than_given_a_clip(self):
+    def test_an_rvc_voice_now_accepts_clips(self):
+        # RVC voices can now store clips like any other voice mode.
         slug = store.create_character(self.library, "Robot", store.MODE_RVC)
-        state = self.a_state([a_segment()], self.a_recording_path())
+        source = self.a_recording_path()
+        state = self.a_state([a_segment(start=1.0, duration=3.0)], source)
         result = handlers.save_segment_to_voice_ui(
-            store.MODE_RVC, slug, state, 0, "", self.library, self.exports)
-        self.assertIn("model, not clips", result[3]["value"])
+            slug, state, 0, "", self.library, self.exports)
+        # Save succeeds (visible status message indicates success, not a refusal)
+        self.assertTrue(result[3]["visible"])
+        self.assertNotIn("model, not clips", result[3]["value"])
+        # Verify the clip was actually saved
+        clip, = store.load_character(self.library, slug)["oneshot"]["clips"]
+        self.assertEqual(clip["label"], f"{os.path.basename(source)} #1")
 
     def test_saving_with_no_voice_selected_says_so(self):
         state = self.a_state([a_segment()], self.a_recording_path())
         result = handlers.save_segment_to_voice_ui(
-            store.MODE_ONESHOT, "", state, 0, "", self.library, self.exports)
+            "", state, 0, "", self.library, self.exports)
         self.assertIn("Select a voice", result[3]["value"])
 
     def test_a_source_that_cannot_be_decoded_is_reported_not_raised(self):
@@ -746,7 +753,7 @@ class SaveToVoiceTests(_Scratch):
         state = handlers.scan_state(_Undecodable.corrupt(self.scratch),
                                     FIXTURE_RATE, [a_segment()])
         result = handlers.save_segment_to_voice_ui(
-            store.MODE_ONESHOT, slug, state, 0, "", self.library, self.exports)
+            slug, state, 0, "", self.library, self.exports)
         self.assertIn("Could not cut", result[3]["value"])
         self.assertEqual(
             store.load_character(self.library, slug)["oneshot"]["clips"], [])
@@ -756,7 +763,7 @@ class SaveToVoiceTests(_Scratch):
         # nothing points at, and the export folder is never cleaned.
         state = self.a_state([a_segment()], self.a_recording_path())
         handlers.save_segment_to_voice_ui(
-            store.MODE_ONESHOT, "", state, 0, "", self.library, self.exports)
+            "", state, 0, "", self.library, self.exports)
         self.assertFalse(os.path.isdir(self.exports))
 
 
@@ -767,7 +774,7 @@ class MetricsHandoffTests(_Scratch):
         slug = store.create_character(self.library, "Narrator", store.MODE_ONESHOT)
         source = self.a_recording_path()
         characters.add_reference_to_character_ui(
-            store.MODE_ONESHOT, slug, source, "", self.library,
+            slug, source, "", self.library,
             metrics={"duration_s": 4.25, "lufs": -14.0})
         clip, = store.load_character(self.library, slug)["oneshot"]["clips"]
         self.assertAlmostEqual(clip["duration_s"], 4.25)
@@ -778,7 +785,7 @@ class MetricsHandoffTests(_Scratch):
         slug = store.create_character(self.library, "Narrator", store.MODE_ONESHOT)
         source = self.a_recording_path(bursts=1, burst_s=3.0)
         characters.add_reference_to_character_ui(
-            store.MODE_ONESHOT, slug, source, "", self.library)
+            slug, source, "", self.library)
         clip, = store.load_character(self.library, slug)["oneshot"]["clips"]
         self.assertAlmostEqual(clip["duration_s"], 3.0, places=1)
         self.assertNotIn("lufs", clip)
@@ -804,8 +811,8 @@ class MetricsHandoffTests(_Scratch):
 
     def test_the_panel_refresh_contract_is_public_and_unchanged(self):
         self.assertIs(characters._refresh, characters.refresh_panel)
-        result = characters.refresh_panel(store.MODE_ONESHOT, "", "hello",
-                                          self.library)
+        slug = store.create_character(self.library, "TestVoice", store.MODE_ONESHOT)
+        result = characters.refresh_panel(slug, "hello", self.library)
         self.assertEqual(len(result), 4)
         self.assertEqual(result[3]["value"], "hello")
 
