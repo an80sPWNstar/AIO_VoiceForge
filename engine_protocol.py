@@ -26,6 +26,11 @@ DONE_SENTINEL = "@@INDEXTTS_WORKER_DONE@@"
 # Asks the worker to drop the model and exit its loop cleanly.
 SHUTDOWN_COMMAND = "shutdown"
 
+# Asks the worker what device it is actually running on, without touching the
+# loaded model. Used by the health endpoint to report a GPU that is verified
+# from the process doing the work, not guessed at from the host.
+DEVICE_QUERY_COMMAND = "device_query"
+
 
 def encode_request(request_file: str, result_file: str, progress_file: str | None) -> str:
     """Return the single stdin line that asks the worker to run one generation."""
@@ -43,6 +48,14 @@ def encode_request(request_file: str, result_file: str, progress_file: str | Non
 def encode_shutdown() -> str:
     """Return the single stdin line that asks the worker to exit."""
     return json.dumps({"command": SHUTDOWN_COMMAND}, ensure_ascii=False) + "\n"
+
+
+def encode_device_query(result_file: str) -> str:
+    """Return the single stdin line that asks the worker to report its device."""
+    return json.dumps(
+        {"command": DEVICE_QUERY_COMMAND, "result_file": result_file},
+        ensure_ascii=False,
+    ) + "\n"
 
 
 def decode_message(line: str) -> dict:

@@ -125,6 +125,16 @@ class EngineWorker:
         # models (w2v-bert, CAMPPlus, BigVGAN) are re-downloaded on first use.
         if os.path.isdir(engine_paths.ENGINE_HF_CACHE):
             env["HF_HOME"] = engine_paths.ENGINE_HF_CACHE
+        # Pins the worker to one physical GPU regardless of what the UI's
+        # device dropdown is set to, which matters for a REST caller that
+        # never touches the dropdown. Unset (the default) leaves CUDA_VISIBLE_
+        # DEVICES exactly as this process inherited it -- current behaviour,
+        # untouched. CUDA enumerates fastest-first on this machine, not PCI
+        # order, so the index here is whatever the caller has already worked
+        # out for their card, not something this file should guess at.
+        tts_device = os.environ.get("VOICEFORGE_TTS_DEVICE")
+        if tts_device:
+            env["CUDA_VISIBLE_DEVICES"] = tts_device
         popen_kwargs = {
             "cwd": os.path.dirname(os.path.abspath(__file__)),
             "env": env,
@@ -250,6 +260,30 @@ class EngineWorker:
     def finished(self) -> bool:
         """True once the worker has answered, or died trying."""
         return self._done.is_set()
+
+    def query_device(self, result_file: str, timeout: float = 15.0) -> bool:
+        """Ask an idle, running worker to report its device. Returns False
+        without asking anything if the worker is busy or not running: a
+        health probe must never compete with a generation for the worker's
+        stdin, and must never spawn a worker just to answer a health check.
+        """
+        with self._lock:
+            if self._busy or not self._is_running():
+                return False
+            self._cancel_idle_timer()
+            self._done.clear()
+            self._busy = True
+            try:
+                self._process.stdin.write(engine_protocol.encode_device_query(result_file))
+                self._process.stdin.flush()
+            except (BrokenPipeError, OSError, ValueError):
+                self._busy = False
+                self._start_idle_timer()
+                return False
+
+        answered = self._done.wait(timeout)
+        self.finish()
+        return answered
 
     def finish(self) -> str:
         """Close out the current request. Returns 'ok' or 'died'.

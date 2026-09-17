@@ -83,6 +83,25 @@ def write_result(result_file: str, payload: dict) -> None:
         json.dump(payload, handle, indent=2, ensure_ascii=False)
 
 
+def query_device() -> dict:
+    """Report the device this worker process actually sees, for the REST
+    health endpoint. Deliberately does not touch the model holder: this has
+    to answer whether or not a generation has ever run yet."""
+    try:
+        import torch
+
+        if torch.cuda.is_available():
+            index = torch.cuda.current_device()
+            return {
+                "status": "ok",
+                "device": f"cuda:{index}",
+                "gpu_name": torch.cuda.get_device_name(index),
+            }
+        return {"status": "ok", "device": "cpu", "gpu_name": None}
+    except Exception as exc:
+        return {"status": "error", "error": str(exc)}
+
+
 def run_one(request: dict, tts, progress_file: str | None) -> dict:
     progress_callback = make_progress_writer(progress_file) if progress_file else None
     try:
@@ -172,6 +191,14 @@ def serve() -> int:
 
         if message.get("command") == engine_protocol.SHUTDOWN_COMMAND:
             break
+
+        if message.get("command") == engine_protocol.DEVICE_QUERY_COMMAND:
+            try:
+                write_result(message["result_file"], query_device())
+            except OSError as exc:
+                print(f"worker: could not write result file: {exc}", file=sys.stderr, flush=True)
+            print(engine_protocol.DONE_SENTINEL, flush=True)
+            continue
 
         result_file = message.get("result_file")
         try:

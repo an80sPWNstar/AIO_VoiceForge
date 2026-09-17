@@ -1607,7 +1607,12 @@ with gr.Blocks(title=APP_TITLE, theme=theme, css=APP_CSS, head=APP_HEAD) as demo
 
 if __name__ == "__main__":
     demo.queue(20)
-    demo.launch(
+    # prevent_thread_lock=True so launch() returns the FastAPI app it just
+    # built (demo.app) instead of blocking here itself. rest_api mounts the
+    # REST routes onto that same app -- same process, same port -- then
+    # block_thread() takes over the blocking launch() would otherwise have
+    # done, so the app still runs exactly until interrupted as before.
+    server_app, _local_url, _share_url = demo.launch(
         # --host and --port were parsed but never forwarded, so the app always
         # bound 127.0.0.1 and no other device on the network could reach it.
         server_name=cmd_args.host,
@@ -1615,4 +1620,8 @@ if __name__ == "__main__":
         share=cmd_args.share,
         inbrowser=True,
         favicon_path=APP_FAVICON_PATH,
+        prevent_thread_lock=True,
     )
+    import rest_api
+    rest_api.mount(server_app)
+    demo.block_thread()
