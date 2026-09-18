@@ -9,7 +9,8 @@ Every route below reuses the exact code path the Gradio "Generate" button
 calls (`webui_generation.gen_single`), which is what already talks to the
 persistent engine worker over the file-based protocol in engine_protocol.py.
 Nothing here imports IndexTTS or touches the GPU directly. See engine_worker.py
-for the worker lifecycle and VOICEFORGE_TTS_DEVICE for GPU pinning.
+for the worker lifecycle and webui_runtime.selected_device for which card the
+next model load uses.
 """
 from __future__ import annotations
 
@@ -25,8 +26,15 @@ import character_store
 import engine_worker
 from webui_character_handlers import CHARACTER_LIBRARY_ROOT
 from webui_generation import DEFAULT_EMOTION_BIASES, gen_single
+from webui_handlers import ENGINE_IDLE_CHOICES, available_devices
 from webui_preview import PREVIEW_MAX_TEXT_TOKENS
-from webui_runtime import DEFAULT_ENGINE_LANGUAGE, DEVICE_AUTO, cmd_args, selected_device
+from webui_runtime import (
+    DEFAULT_ENGINE_LANGUAGE,
+    DEVICE_AUTO,
+    DEVICE_CPU,
+    cmd_args,
+    selected_device,
+)
 from webui_tone_presets import TONE_SPEED_MAX, TONE_SPEED_MIN
 
 router = APIRouter(prefix="/api/v1")
@@ -41,6 +49,12 @@ _TTS_LOCK = threading.Lock()
 # How long a health check's device query waits for the worker to answer
 # before giving up and falling back to the host's own view of the GPU.
 _DEVICE_QUERY_TIMEOUT_SECONDS = 10.0
+
+# How long /unload waits for an in-flight REST generation before giving up
+# and telling the caller the model is still resident. Short on purpose: the
+# caller wants VRAM now or not at all, and blocking a ComfyUI graph for the
+# length of someone else's synthesis is worse than reporting "busy".
+_UNLOAD_LOCK_TIMEOUT_SECONDS = 2.0
 
 _DEFAULT_TEXT_SEGMENT_TOKENS = str(max(20, min(PREVIEW_MAX_TEXT_TOKENS, cmd_args.gui_seg_tokens)))
 
@@ -140,22 +154,62 @@ def _query_gpu_name() -> tuple[str | None, str | None]:
         except OSError:
             pass
 
-    # Worker not running, busy, or unreachable: report what the host process
-    # itself sees. Same physical machine and driver, so a pinned index (see
-    # VOICEFORGE_TTS_DEVICE) means the same card either way -- just not proof
-    # the engine process is actually holding it right now.
+    # Worker not running, busy, or unreachable: report the card the next load
+    # would use, named from the host's own CUDA view. Host and engine now
+    # enumerate identically (see engine_worker._spawn), so an index means the
+    # same card either way -- just not proof the engine is holding it now.
+    chosen = selected_device.get()
+    if chosen == DEVICE_CPU:
+        return DEVICE_CPU, None
     try:
         import torch
 
         if torch.cuda.is_available():
-            pinned = os.environ.get("VOICEFORGE_TTS_DEVICE")
-            index = int(pinned) if pinned and pinned.isdigit() else 0
+            index = int(chosen.split(":", 1)[1]) if chosen.startswith("cuda:") else 0
             if index >= torch.cuda.device_count():
                 index = 0
             return f"cuda:{index}", torch.cuda.get_device_name(index)
     except Exception:
         pass
     return None, None
+
+
+def _resolve_device(value) -> str:
+    """Validate a device string against the pickable devices, or raise ValueError.
+
+    Shared by /device and /tts so one list decides what is acceptable and both
+    reject the same values with the same message. Enumerated per call rather
+    than cached: this is the UI's own list, and a card that appeared or went
+    away since startup should be reflected.
+    """
+    if not isinstance(value, str):
+        raise ValueError("device must be a string.")
+    candidate = value.strip()
+    valid = [device for _, device in available_devices()]
+    if candidate not in valid:
+        raise ValueError(f"Unknown device {value!r}. Valid values: {', '.join(valid)}.")
+    return candidate
+
+
+def _resolve_idle_seconds(value) -> int:
+    """Validate an idle limit in seconds, or raise ValueError.
+
+    0 is valid and means the engine never unloads itself. bools are rejected
+    before the int check because True is an int in Python and would otherwise
+    be accepted as a one-second idle limit.
+    """
+    message = "idle_seconds must be a whole, non-negative number of seconds (0 means never unload)."
+    if isinstance(value, bool):
+        raise ValueError(message)
+    if isinstance(value, float):
+        if not value.is_integer():  # also rejects nan and inf
+            raise ValueError(message)
+        value = int(value)
+    if not isinstance(value, int):
+        raise ValueError(message)
+    if value < 0:
+        raise ValueError(message)
+    return value
 
 
 @router.get("/health")
@@ -169,6 +223,12 @@ def health():
         "device": device or ("auto" if selected_device.get() == DEVICE_AUTO else selected_device.get()),
         "gpu_name": gpu_name,
         "worker_running": bool(status["running"]),
+        # Whether weights are actually resident right now, which is what
+        # a caller deciding to free the card cares about. The worker
+        # loads on its first request, so a running worker that has
+        # served nothing is holding no VRAM.
+        "model_loaded": bool(status["model_loaded"]),
+        "busy": bool(status["busy"]),
     }
 
 
@@ -224,7 +284,30 @@ async def tts(payload: dict):
     # A caller that passes a seed today gets a valid, but not reproducible,
     # generation.
 
+    # Optional overrides for the two session-wide settings /device and /idle
+    # own. Validated here, before the lock, so a bad value is a 400 rather than
+    # a half-applied state. Both outlive the request, exactly as they would if
+    # they had been set through their own endpoints.
+    device = None
+    idle_seconds = None
+    try:
+        if "device" in payload:
+            device = _resolve_device(payload["device"])
+        if "idle_seconds" in payload:
+            idle_seconds = _resolve_idle_seconds(payload["idle_seconds"])
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+
     with _TTS_LOCK:
+        # Under the lock so a concurrent caller cannot move the device between
+        # here and the generation it was meant for. It only binds if this
+        # request is the one that loads the model: weights already resident
+        # stay on the card they loaded onto until an /unload, which this
+        # deliberately does not do on the caller's behalf.
+        if device is not None:
+            selected_device.set(device)
+        if idle_seconds is not None:
+            engine_worker.WORKER.set_idle_seconds(idle_seconds)
         try:
             wav_path = _run_tts_sync(text, prompt_path, speed)
         except gr.Error as exc:
@@ -235,6 +318,110 @@ async def tts(payload: dict):
             return JSONResponse({"error": str(exc)}, status_code=500)
 
     return FileResponse(wav_path, media_type="audio/wav", filename=os.path.basename(wav_path))
+
+
+@router.post("/unload")
+def unload():
+    """Drop the TTS model and release the engine's VRAM.
+
+    The weights live in the persistent engine subprocess (engine_worker.py),
+    not in this process, so freeing them means asking that worker to exit. It
+    respawns on the next request and reloads on first use -- that reload is the
+    whole cost, and the persistent worker is exactly why a second generation is
+    much faster than the first. So this is opt-in, for when another process on
+    the same card needs the memory more than this one needs the warm start.
+
+    Refuses while a generation is in flight instead of killing it. The Gradio
+    Generate button does not take _TTS_LOCK, so holding the lock is not by
+    itself proof the engine is idle -- the worker's own busy flag is.
+    """
+    if not _TTS_LOCK.acquire(timeout=_UNLOAD_LOCK_TIMEOUT_SECONDS):
+        return JSONResponse(
+            {"error": "A TTS request is in progress; model left loaded.", "unloaded": False},
+            status_code=409,
+        )
+    try:
+        if engine_worker.WORKER.status()["busy"]:
+            return JSONResponse(
+                {"error": "The engine is generating; model left loaded.", "unloaded": False},
+                status_code=409,
+            )
+        unloaded = engine_worker.WORKER.shutdown()
+    except Exception as exc:
+        return JSONResponse({"error": str(exc), "unloaded": False}, status_code=500)
+    finally:
+        _TTS_LOCK.release()
+
+    return {
+        "unloaded": bool(unloaded),
+        "worker_running": bool(engine_worker.WORKER.status()["running"]),
+    }
+
+
+@router.get("/devices")
+def devices():
+    """Every device that may be selected, and the one the next load will use.
+
+    Built from the UI's own enumeration so this list and the dropdown cannot
+    drift apart.
+    """
+    return {
+        "devices": [{"value": value, "label": label} for label, value in available_devices()],
+        "current": selected_device.get(),
+    }
+
+
+@router.post("/device")
+def set_device(payload: dict):
+    """Choose the device the next model load uses.
+
+    The weights live in the engine subprocess and the choice travels down with
+    the request that loads them, so this cannot move a model that is already
+    resident. When one is, `reload_required` says so and the caller decides
+    whether to spend an /unload on it -- dropping the model here would take it
+    out from under whoever is mid-session on the Gradio page.
+    """
+    try:
+        device = _resolve_device(payload.get("device"))
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+
+    changed = selected_device.set(device)
+    response = {
+        "device": device,
+        "changed": bool(changed),
+        "note": "Applies to the next model load.",
+    }
+    if changed and engine_worker.WORKER.status()["model_loaded"]:
+        response["reload_required"] = True
+    return response
+
+
+@router.get("/idle")
+def idle():
+    """The engine's current idle-unload limit, and the limits the UI offers."""
+    return {
+        "idle_seconds": engine_worker.WORKER.status()["idle_limit_seconds"],
+        "choices": [
+            {"label": label, "seconds": seconds} for label, seconds in ENGINE_IDLE_CHOICES
+        ],
+    }
+
+
+@router.post("/idle")
+def set_idle(payload: dict):
+    """Set how long the engine may sit idle before it unloads itself.
+
+    0 means never: the model then holds VRAM until /unload, the UI's unload
+    button, or the app exits. A shortened limit applies to the worker already
+    sitting idle, not only to the next one (see EngineWorker.set_idle_seconds).
+    """
+    try:
+        seconds = _resolve_idle_seconds(payload.get("idle_seconds"))
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+
+    return {"idle_seconds": engine_worker.WORKER.set_idle_seconds(seconds)}
 
 
 def mount(app) -> None:

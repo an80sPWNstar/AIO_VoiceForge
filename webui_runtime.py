@@ -65,6 +65,39 @@ class DeviceSelection:
 selected_device = DeviceSelection()
 
 
+def _seed_selected_device_from_env():
+    """Apply VOICEFORGE_TTS_DEVICE as the device the first model load uses.
+
+    This variable used to be handed to the engine subprocess as
+    CUDA_VISIBLE_DEVICES, which pinned the engine to one card by hiding every
+    other one from it. That made a device picker meaningless: the host
+    enumerated all three GPUs while the child could only ever see the pinned
+    one, and saw it as cuda:0 -- so the two sides disagreed about which card
+    any index named, and moving the engine needed an app restart. Seeding the
+    selection instead leaves the child's device list identical to the host's,
+    so an index means the same card on both sides and the dropdown (or the
+    REST /device endpoint) can move the engine between cards at runtime.
+
+    Accepts a bare index ("2") as shorthand for "cuda:2", plus "cuda:N",
+    "cpu" and "auto". Unset leaves the default, auto.
+    """
+    raw = (os.environ.get("VOICEFORGE_TTS_DEVICE") or "").strip()
+    if not raw:
+        return
+    value = raw.lower()
+    if value.isdigit():
+        value = f"cuda:{int(value)}"
+    elif value not in (DEVICE_CPU, DEVICE_AUTO) and not (
+        value.startswith("cuda:") and value[len("cuda:"):].isdigit()
+    ):
+        print(f"Ignoring VOICEFORGE_TTS_DEVICE={raw!r}: expected auto, cpu, a CUDA index, or cuda:N.")
+        return
+    selected_device.set(value)
+
+
+_seed_selected_device_from_env()
+
+
 class LoraSelection:
     """Holds the LoRA adapter the next generation should speak through.
 

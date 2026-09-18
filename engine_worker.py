@@ -125,16 +125,15 @@ class EngineWorker:
         # models (w2v-bert, CAMPPlus, BigVGAN) are re-downloaded on first use.
         if os.path.isdir(engine_paths.ENGINE_HF_CACHE):
             env["HF_HOME"] = engine_paths.ENGINE_HF_CACHE
-        # Pins the worker to one physical GPU regardless of what the UI's
-        # device dropdown is set to, which matters for a REST caller that
-        # never touches the dropdown. Unset (the default) leaves CUDA_VISIBLE_
-        # DEVICES exactly as this process inherited it -- current behaviour,
-        # untouched. CUDA enumerates fastest-first on this machine, not PCI
-        # order, so the index here is whatever the caller has already worked
-        # out for their card, not something this file should guess at.
-        tts_device = os.environ.get("VOICEFORGE_TTS_DEVICE")
-        if tts_device:
-            env["CUDA_VISIBLE_DEVICES"] = tts_device
+        # CUDA_VISIBLE_DEVICES is deliberately left exactly as this process
+        # inherited it, so the child enumerates the same cards, in the same
+        # order, as the host. VOICEFORGE_TTS_DEVICE used to be written here
+        # instead, which pinned the engine by hiding every other GPU from it:
+        # the host saw three devices, the child saw one and called it cuda:0,
+        # and a device picker cannot work when the two sides disagree about
+        # what an index names. That variable now seeds the device selection in
+        # webui_runtime, which travels down with each request, so the card is
+        # chosen per load rather than fixed for the life of the process.
         popen_kwargs = {
             "cwd": os.path.dirname(os.path.abspath(__file__)),
             "env": env,
