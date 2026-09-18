@@ -83,23 +83,48 @@ def write_result(result_file: str, payload: dict) -> None:
         json.dump(payload, handle, indent=2, ensure_ascii=False)
 
 
-def query_device() -> dict:
-    """Report the device this worker process actually sees, for the REST
-    health endpoint. Deliberately does not touch the model holder: this has
-    to answer whether or not a generation has ever run yet."""
-    try:
-        import torch
+# Track the device the currently-loaded model is resident on, so query_device()
+# can report it truthfully. The worker sets this when a model loads and clears it
+# when releasing, so the REST health endpoint knows whether to trust our answer
+# or fall back to its own device discovery.
+_ACTIVE_DEVICE: str | None = None
 
-        if torch.cuda.is_available():
-            index = torch.cuda.current_device()
+
+def query_device() -> dict:
+    """Report the device the active model (if any) is loaded on.
+
+    If a model is loaded, returns status "ok" with its actual device, which is
+    accurate because the model holder calls torch.cuda.set_device() before
+    loading each model -- that makes the thread's default device the same as
+    the model's device, so current_device() is truthful.
+
+    If no model is loaded yet, returns a status other than "ok" so the REST
+    health endpoint falls back to its own device discovery (which is accurate).
+    """
+    if _ACTIVE_DEVICE is not None:
+        try:
+            import torch
+
+            if _ACTIVE_DEVICE == "cpu":
+                return {
+                    "status": "ok",
+                    "device": "cpu",
+                    "gpu_name": None,
+                }
+
+            # Extract device index from "cuda:N"
+            device_index = int(_ACTIVE_DEVICE.split(":")[1])
             return {
                 "status": "ok",
-                "device": f"cuda:{index}",
-                "gpu_name": torch.cuda.get_device_name(index),
+                "device": _ACTIVE_DEVICE,
+                "gpu_name": torch.cuda.get_device_name(device_index),
             }
-        return {"status": "ok", "device": "cpu", "gpu_name": None}
-    except Exception as exc:
-        return {"status": "error", "error": str(exc)}
+        except Exception as exc:
+            return {"status": "error", "error": str(exc)}
+
+    # No model loaded yet; return a status other than "ok" so the caller
+    # falls back to its own device discovery.
+    return {"status": "no_model_loaded"}
 
 
 def run_one(request: dict, tts, progress_file: str | None) -> dict:
@@ -145,6 +170,8 @@ class ModelHolder:
         self._key: str | None = None
 
     def get(self, runtime: dict):
+        global _ACTIVE_DEVICE
+
         key = json.dumps(runtime, sort_keys=True, default=str)
         if self._tts is not None and key == self._key:
             return self._tts
@@ -153,13 +180,52 @@ class ModelHolder:
             print("Runtime options changed; reloading the engine.", flush=True)
             self.release()
 
+        # Handle device selection before creating the model. If a specific cuda
+        # device is requested, set it as the thread's default so all allocations
+        # land on the correct card and current_device() is truthful.
+        requested_device = runtime.get("device")
+        if requested_device and requested_device.startswith("cuda:"):
+            try:
+                import torch
+                device_index = int(requested_device.split(":")[1])
+                torch.cuda.set_device(device_index)
+            except (ImportError, ValueError, RuntimeError) as exc:
+                # If set_device fails, log it but continue: failing to set the
+                # device must never prevent a generation from running.
+                print(
+                    f"Worker: could not set CUDA device to {requested_device} ({exc}); "
+                    "continuing with default device.",
+                    flush=True
+                )
+
         self._tts = create_tts(runtime)
+
+        # Track what device the model is actually on, for query_device() to
+        # report truthfully.
+        if requested_device == "cpu":
+            _ACTIVE_DEVICE = "cpu"
+        elif requested_device and requested_device.startswith("cuda:"):
+            _ACTIVE_DEVICE = requested_device
+        else:
+            # None / auto: IndexTTS2 chose the device. Read current_device()
+            # to find out what it selected. After set_device, this is truthful.
+            try:
+                import torch
+                if torch.cuda.is_available():
+                    _ACTIVE_DEVICE = f"cuda:{torch.cuda.current_device()}"
+                else:
+                    _ACTIVE_DEVICE = "cpu"
+            except ImportError:
+                _ACTIVE_DEVICE = "cpu"
+
         self._key = key
         return self._tts
 
     def release(self) -> None:
+        global _ACTIVE_DEVICE
         self._tts = None
         self._key = None
+        _ACTIVE_DEVICE = None
         release_cuda_cache()
 
 
